@@ -1,8 +1,8 @@
 import Fastify from 'fastify';
 import {fileURLToPath} from 'node:url';
 import {parseQuery,rankCandidates,type ProductQuery,type RawCandidate} from '@barcodebridge/core';
-import {verifiedPairs} from './verified-pairs.js';
-import {searchWeb} from './web-search.js';
+import {resolveWithSearch} from './search-ai.js';
+import {cached,cache,reserveSharedSearch} from './cache.js';
 export const app=Fastify({logger:false});
 const timeout=5000;
 async function getJson(url:URL) {
@@ -33,21 +33,40 @@ async function barcodeLookup(query:ProductQuery):Promise<RawCandidate[]> {
  const data=await getJson(url);
  return (data.products||[]).slice(0,10).map((p:any)=>({gtin:String(p.barcode_number||''),title:String(p.title||''),brand:p.brand||undefined,asin:p.asin||undefined,evidence:{provider:'Barcode Lookup',url:`https://www.barcodelookup.com/${encodeURIComponent(String(p.barcode_number||''))}`,title:String(p.title||''),brand:p.brand||undefined,asin:p.asin||undefined}}));
 }
-const providers=[{name:'Corrispondenze verificate',run:async(q:ProductQuery)=>verifiedPairs(q)},{name:'Ricerca web',run:searchWeb},{name:'UPCitemdb',run:upcitemdb},{name:'Open Beauty Facts',run:(q:ProductQuery)=>openFacts(q,'world.openbeautyfacts.org','Open Beauty Facts')},{name:'Open Food Facts',run:(q:ProductQuery)=>openFacts(q,'world.openfoodfacts.org','Open Food Facts')},{name:'Barcode Lookup',run:barcodeLookup}];
+const providers=[{name:'UPCitemdb',run:upcitemdb},{name:'Open Beauty Facts',run:(q:ProductQuery)=>openFacts(q,'world.openbeautyfacts.org','Open Beauty Facts')},{name:'Open Food Facts',run:(q:ProductQuery)=>openFacts(q,'world.openfoodfacts.org','Open Food Facts')},{name:'Barcode Lookup',run:barcodeLookup}];
+const attempts=new Map<string,{count:number;until:number}>();
+function allow(ip:string) {
+ const now=Date.now(),entry=attempts.get(ip);
+ if(!entry||entry.until<now){attempts.set(ip,{count:1,until:now+60_000});return true}
+ if(entry.count>=10)return false;
+ entry.count++;return true;
+}
 app.get('/api/health',async()=>({ok:true}));
-app.post<{Body:{input?:string;nameHint?:string}}>('/api/resolve', {bodyLimit:4096}, async(request,reply)=>{
+app.post<{Body:{input?:string;nameHint?:string;keys?:{tavily?:string;gemini?:string}}}>('/api/resolve', {bodyLimit:4096}, async(request,reply)=>{
+ if(!allow(request.ip)) return reply.code(429).send({error:'Troppe ricerche. Riprova tra un minuto.'});
  let query:ProductQuery;try{query=parseQuery(request.body?.input||'',request.body?.nameHint);}catch(error){return reply.code(400).send({error:(error as Error).message});}
- const verified=verifiedPairs(query);
- // A reviewed ASIN pair can be returned immediately without waiting on external APIs.
- if(query.kind==='asin' && verified.length) return {query,results:rankCandidates(query,verified),providerErrors:[],needsNameHint:false};
+ const userKeys=request.body?.keys||{};
+ if([userKeys.tavily,userKeys.gemini].some(key=>key!==undefined&&(typeof key!=='string'||key.length>256)))return reply.code(400).send({error:'Chiave API non valida.'});
+ const key=userKeys.tavily||process.env.TAVILY_API_KEY;
+ const gemini=userKeys.gemini||process.env.GEMINI_API_KEY;
+ const searchCacheKey=JSON.stringify({kind:query.kind,value:query.value,nameHint:query.nameHint||''});
+ let searchCandidates=cached(searchCacheKey);
+ const errors:string[]=[];
+ if(!searchCandidates && key && query.kind!=='gtin') {
+  if(!userKeys.tavily && !reserveSharedSearch()) errors.push('Quota giornaliera della ricerca condivisa esaurita. Usa una tua chiave Tavily.');
+  else {
+   try{searchCandidates=await resolveWithSearch(query,{tavily:key,gemini});cache(searchCacheKey,searchCandidates)}
+   catch(error){errors.push((error as Error).message);searchCandidates=[]}
+  }
+ }
  const active=query.kind==='asin'&&!query.nameHint
-  ? providers.filter(p=>['Ricerca web','Barcode Lookup'].includes(p.name))
+  ? providers.filter(p=>p.name==='Barcode Lookup')
   : providers;
  const settled=await Promise.allSettled(active.map(p=>p.run(query)));
- const candidates=settled.flatMap(x=>x.status==='fulfilled'?x.value:[]);
- const errors=settled.flatMap((x,i)=>x.status==='rejected'?[`${active[i].name}: ${(x.reason as Error).message}`]:[]);
+ const candidates=[...(searchCandidates||[]),...settled.flatMap(x=>x.status==='fulfilled'?x.value:[])];
+ errors.push(...settled.flatMap((x,i)=>x.status==='rejected'?[`${active[i].name}: ${(x.reason as Error).message}`]:[]));
  const results=rankCandidates(query,candidates).slice(0,15);
- return {query,results,providerErrors:errors,needsNameHint:query.kind==='asin'&&!query.nameHint&&!results.some(r=>r.reasons.includes('ASIN associato esplicitamente alla fonte'))};
+ return {query,results,providerErrors:errors,needsNameHint:query.kind==='asin'&&!query.nameHint&&!results.length,searchAvailable:!!key};
 });
 const port=Number(process.env.PORT||3001);
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {

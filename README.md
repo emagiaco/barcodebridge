@@ -4,7 +4,7 @@ Una piccola app open source per trovare candidati EAN/UPC a partire da un nome p
 
 ## Avvio
 
-Richiede Node.js 20.19+ e npm. Da questa cartella:
+Richiede Node.js 24+ e npm. Da questa cartella:
 
 ```bash
 npm install
@@ -16,19 +16,19 @@ Apri http://localhost:5173. L'API gira su http://localhost:3001 e Vite inoltra `
 
 Per la build: `npm run build`, poi `npm run start -w @barcodebridge/api` e servi `apps/web/dist` con un server statico che inoltri `/api` all'API. Per eseguire i test: `npm test` dopo la build del core.
 
-## Fonti
+## Ricerca per ASIN, URL Amazon o nome
 
-- UPCitemdb (trial gratuito, con limiti di frequenza e di richieste)
-- Open Food Facts e Open Beauty Facts (ricerca per nome o codice)
-- Barcode Lookup, solo se imposti `BARCODELOOKUP_API_KEY` nell'ambiente del backend
-- Coppie ASIN/EAN verificate e documentate in `apps/api/src/verified-pairs.ts` (attualmente un prodotto)
-- Ricerca web per altri ASIN, se imposti `BRAVE_SEARCH_API_KEY` nell'ambiente del backend
+BarcodeBridge estrae l'ASIN dal link Amazon e cerca sul web una sola volta tramite Tavily. La ricerca `basic` costa un credito; Tavily dichiara 1.000 crediti gratuiti al mese per account. Una regola locale cerca EAN/UPC/GTIN espliciti nei risultati. Gemini 3.1 Flash-Lite viene chiamato **solo** se le regole trovano meno di due domini con un codice: estrae dati dai brevi testi delle fonti usando JSON strutturato. Il server accetta solo codici che compaiono testualmente nella fonte indicata e superano la cifra di controllo. Nessuna AI può convalidare da sola un'associazione tra prodotto e barcode.
 
-Queste fonti possono essere temporaneamente indisponibili o restituire dati incompleti. L'API raccoglie le risposte in parallelo e mostra le fonti che non hanno risposto. Nessuna chiave API va inserita nella web app.
+Configura `TAVILY_API_KEY` nel backend per offrire ricerche condivise (massimo 25 ricerche al giorno, conteggiate in SQLite, più un limite per indirizzo IP). `GEMINI_API_KEY` è facoltativa: abilita l'estrazione AI solo quando serve. Entrambe possono essere sostituite dalle chiavi personali inserite nell'interfaccia. Non sono incluse chiavi nel repository: il gestore della propria installazione deve configurarle. Senza Tavily, la ricerca generica per ASIN non è disponibile; resta la ricerca per nome su UPCitemdb, Open Food Facts e Open Beauty Facts e quella ASIN su Barcode Lookup se configurata la relativa chiave.
 
-**ASIN:** `B09SY5QHHJ` restituisce `8054383070350` senza chiavi API: due pagine di venditori riportano esplicitamente entrambi i codici. Le fonti e la data del controllo sono visibili nel risultato. Questa è una coppia verificata nel progetto, non una conversione matematica dell'ASIN. Per ASIN non presenti nell'archivio serve un provider configurato: `BRAVE_SEARCH_API_KEY` cerca pagine contenenti ASIN ed EAN, mentre `BARCODELOOKUP_API_KEY` interroga il catalogo per ASIN. In assenza di entrambi, aggiungi il nome preciso, la marca e il formato nel campo facoltativo. Una ricerca web può fornire indizi sbagliati o non trovare risultati; il progetto non estrae dati direttamente da Amazon.
+### Chiavi personali e cache
 
-Per configurare un provider facoltativo, imposta la variabile nell'ambiente **prima** di avviare `npm run dev`, ad esempio `BRAVE_SEARCH_API_KEY=... npm run dev`. Non inserire le chiavi in `apps/web` o nel repository. La ricerca web riconosce soltanto codici vicini alle etichette EAN/UPC/GTIN in risultati che contengono anche l'ASIN; non considera una coincidenza tra numeri una prova definitiva.
+Le chiavi personali possono essere usate per una sola sessione o conservate **nel database IndexedDB del browser**, cifrate con AES-GCM e una frase scelta dall'utente. La frase non viene inviata al server. Le chiavi decifrate vengono inviate al backend soltanto per eseguire la ricerca e non sono salvate nel suo database. Usa HTTPS quando l'app non gira su localhost. Non salvare le chiavi in un browser condiviso se non hai il controllo del dispositivo.
+
+Il backend usa un piccolo database SQLite (`BARCODEBRIDGE_DB_PATH`, predefinito `./data/barcodebridge.sqlite`) per memorizzare **solo i risultati positivi**, senza chiavi, per sette giorni. Ripetere una ricerca già riuscita non consuma una nuova chiamata web. I limiti e le quote dei fornitori possono cambiare: verifica il piano associato alle tue chiavi.
+
+**Nota sui prezzi Google:** il tier API gratuito di Gemini Flash-Lite copre l'estrazione testuale, ma il Grounding con Google Search nell'API non fa parte di quel tier. La quota di ricerche Grounding indicata da Google si applica al piano a pagamento. Per questo la ricerca web avviene tramite Tavily e Gemini non usa Grounding.
 
 **Confidenza:** è una regola euristica leggibile, non una probabilità calibrata. Il checksum indica soltanto che il numero è formalmente valido; non stabilisce che appartenga al prodotto. Confronta sempre variante e confezione. Un barcode leggibile non garantisce che Yuka abbia il prodotto nel proprio catalogo.
 
