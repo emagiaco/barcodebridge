@@ -46,6 +46,7 @@ function allow(ip:string) {
 }
 app.get('/api/health',async()=>({ok:true}));
 app.post<{Body:{input?:string;nameHint?:string;keys?:{tavily?:string;gemini?:string}}}>('/api/resolve', {bodyLimit:4096}, async(request,reply)=>{
+ const startedAt=new Date().toISOString();
  if(!allow(request.ip)) return reply.code(429).send({error:'Troppe ricerche. Riprova tra un minuto.'});
  let query:ProductQuery;try{query=parseQuery(request.body?.input||'',request.body?.nameHint);}catch(error){return reply.code(400).send({error:(error as Error).message});}
  if(query.kind==='gtin'){
@@ -60,7 +61,7 @@ app.post<{Body:{input?:string;nameHint?:string;keys?:{tavily?:string;gemini?:str
  const gemini=userKeys.gemini||process.env.GEMINI_API_KEY;
  const searchCacheKey=JSON.stringify({kind:query.kind,value:query.value,nameHint:query.nameHint||''});
  let searchCandidates=cached(searchCacheKey);
- const searchDiagnostics:SearchDiagnostics={searches:0,pages:0,asinPages:0,verifiedCodes:0};
+ const searchDiagnostics:SearchDiagnostics={searches:0,pages:0,asinPages:0,verifiedCodes:0,attempts:[]};
  const errors:string[]=[];
  if(!searchCandidates && key) {
   try{searchCandidates=await resolveWithSearch(query,{tavily:key,gemini},()=>!!userKeys.tavily||reserveSharedSearch(),searchDiagnostics);cache(searchCacheKey,searchCandidates)}
@@ -70,10 +71,11 @@ app.post<{Body:{input?:string;nameHint?:string;keys?:{tavily?:string;gemini?:str
   ? providers.filter(p=>p.name==='Barcode Lookup')
   : providers;
  const settled=await Promise.allSettled(active.map(p=>p.run(query)));
+ const providerTrace=settled.map((item,index)=>({provider:active[index].name,status:item.status,count:item.status==='fulfilled'?item.value.length:0,error:item.status==='rejected'?(item.reason as Error).message:undefined}));
  const candidates=[...(searchCandidates||[]),...settled.flatMap(x=>x.status==='fulfilled'?x.value:[])];
  errors.push(...settled.flatMap((x,i)=>x.status==='rejected'?[`${active[i].name}: ${(x.reason as Error).message}`]:[]));
  const results=rankCandidates(query,candidates).slice(0,15);
- return {query,results,providerErrors:errors,needsNameHint:query.kind==='asin'&&!query.nameHint&&!results.length,searchAvailable:!!key,searchDiagnostics};
+ return {query,results,providerErrors:errors,needsNameHint:query.kind==='asin'&&!query.nameHint&&!results.length,searchAvailable:!!key,searchDiagnostics,debug:{startedAt,finishedAt:new Date().toISOString(),providerTrace}};
 });
 const port=Number(process.env.PORT||3001);
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {

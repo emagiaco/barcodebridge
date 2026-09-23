@@ -35,7 +35,7 @@ test('ASIN search retries once with an EAN query when the first snippets lack an
  const original=global.fetch, calls=[];
  const uniqueAsin='B'+(Date.now()+1).toString(36).toUpperCase().padStart(9,'0').slice(-9);
  global.fetch=async(_url,options)=>{
-  const body=JSON.parse(options.body),term=body.query;assert.equal(body.exact_match,true);calls.push(term);
+  const body=JSON.parse(options.body),term=body.query;assert.equal(body.exact_match,undefined);calls.push(term);
   return new Response(JSON.stringify({results:term.endsWith(' EAN')?[{url:'https://www.ebay.it/itm/123',title:`Luminer ${uniqueAsin}`,content:'EAN 8054383070350'}]:[]}),{status:200});
  };
  try {
@@ -73,4 +73,20 @@ test('invalid characters in a personal Gemini key are explained without leaking 
  const response=await app.inject({method:'POST',url:'/api/resolve',payload:{input:'B09SY5QHHJ',keys:{gemini:'not-a-key-√'}}});
  assert.equal(response.statusCode,400);assert.match(response.json().error,/chiave Gemini contiene caratteri non validi/);
  assert.ok(!JSON.stringify(response.json()).includes('not-a-key'));
+});
+test('Tavily 400 diagnostics include the provider response without exposing the key',async()=>{
+ const original=global.fetch;
+ const personal='tvly-secret-test';
+ const uniqueAsin='B'+(Date.now()+3).toString(36).toUpperCase().padStart(9,'0').slice(-9);
+ global.fetch=async(_url,options)=>{
+  const body=JSON.parse(options.body);assert.equal(body.query,uniqueAsin);assert.equal(body.exact_match,undefined);
+  return new Response(JSON.stringify({detail:`Invalid query; token ${personal}`}),{status:400});
+ };
+ try{
+  const response=await app.inject({method:'POST',url:'/api/resolve',payload:{input:uniqueAsin,keys:{tavily:personal}}});
+  const json=response.json();
+  assert.equal(json.searchDiagnostics.attempts[0].httpStatus,400);
+  assert.match(json.searchDiagnostics.attempts[0].error,/Invalid query/);
+  assert.ok(!JSON.stringify(json).includes(personal));
+ }finally{global.fetch=original}
 });
