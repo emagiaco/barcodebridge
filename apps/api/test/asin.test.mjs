@@ -45,3 +45,19 @@ test('ASIN search retries once with a marketplace query when the first snippets 
   assert.match(calls[1],/EAN ebay/);
  } finally {global.fetch=original}
 });
+test('ASIN search uses full source text when the short snippet omits the barcode',async()=>{
+ const original=global.fetch;
+ const uniqueAsin='B'+(Date.now()+2).toString(36).toUpperCase().padStart(9,'0').slice(-9);
+ const calls=[];
+ global.fetch=async(_url,options)=>{
+  calls.push(JSON.parse(options.body));
+  return new Response(JSON.stringify({results:[{url:'https://example.com/item',title:`Luminer ${uniqueAsin}`,content:'Siero 100 ml',raw_content:`Prodotto ${uniqueAsin}. EAN: 8054383070350`}]}),{status:200});
+ };
+ try{
+  const response=await app.inject({method:'POST',url:'/api/resolve',payload:{input:uniqueAsin,keys:{tavily:'personal-test-key'}}});
+  assert.equal(response.json().results[0].gtin,'8054383070350');
+  assert.equal(response.json().searchDiagnostics.verifiedCodes,1);
+  assert.equal(calls.length,1);
+  assert.equal(calls[0].include_raw_content,'text');
+ }finally{global.fetch=original}
+});

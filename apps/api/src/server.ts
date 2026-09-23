@@ -1,7 +1,7 @@
 import Fastify from 'fastify';
 import {fileURLToPath} from 'node:url';
 import {parseQuery,rankCandidates,type ProductQuery,type RawCandidate} from '@barcodebridge/core';
-import {resolveWithSearch} from './search-ai.js';
+import {resolveWithSearch,type SearchDiagnostics} from './search-ai.js';
 import {cached,cache,reserveSharedSearch} from './cache.js';
 export const app=Fastify({logger:false});
 const timeout=5000;
@@ -54,9 +54,10 @@ app.post<{Body:{input?:string;nameHint?:string;keys?:{tavily?:string;gemini?:str
  const gemini=userKeys.gemini||process.env.GEMINI_API_KEY;
  const searchCacheKey=JSON.stringify({kind:query.kind,value:query.value,nameHint:query.nameHint||''});
  let searchCandidates=cached(searchCacheKey);
+ const searchDiagnostics:SearchDiagnostics={searches:0,pages:0,asinPages:0,verifiedCodes:0};
  const errors:string[]=[];
  if(!searchCandidates && key && query.kind!=='gtin') {
-  try{searchCandidates=await resolveWithSearch(query,{tavily:key,gemini},()=>!!userKeys.tavily||reserveSharedSearch());cache(searchCacheKey,searchCandidates)}
+  try{searchCandidates=await resolveWithSearch(query,{tavily:key,gemini},()=>!!userKeys.tavily||reserveSharedSearch(),searchDiagnostics);cache(searchCacheKey,searchCandidates)}
   catch(error){errors.push((error as Error).message);searchCandidates=[]}
  }
  const active=query.kind==='asin'&&!query.nameHint
@@ -66,7 +67,7 @@ app.post<{Body:{input?:string;nameHint?:string;keys?:{tavily?:string;gemini?:str
  const candidates=[...(searchCandidates||[]),...settled.flatMap(x=>x.status==='fulfilled'?x.value:[])];
  errors.push(...settled.flatMap((x,i)=>x.status==='rejected'?[`${active[i].name}: ${(x.reason as Error).message}`]:[]));
  const results=rankCandidates(query,candidates).slice(0,15);
- return {query,results,providerErrors:errors,needsNameHint:query.kind==='asin'&&!query.nameHint&&!results.length,searchAvailable:!!key};
+ return {query,results,providerErrors:errors,needsNameHint:query.kind==='asin'&&!query.nameHint&&!results.length,searchAvailable:!!key,searchDiagnostics};
 });
 const port=Number(process.env.PORT||3001);
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
