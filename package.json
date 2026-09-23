@@ -1,0 +1,6 @@
+{
+  "name": "barcodebridge", "private": true, "version": "0.1.0", "type": "module",
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {"dev":"concurrently -k \"npm run dev -w @barcodebridge/api\" \"npm run dev -w @barcodebridge/web\"", "build":"npm run build -w @barcodebridge/core && npm run build -w @barcodebridge/api && npm run build -w @barcodebridge/web", "test":"npm run test -w @barcodebridge/core"},
+  "devDependencies":{"concurrently":"^9.2.0","typescript":"^5.9.3"}
+}
