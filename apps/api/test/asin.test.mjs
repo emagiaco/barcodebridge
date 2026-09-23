@@ -31,3 +31,17 @@ test('API resolves an ASIN with one search call and a personal key',async()=>{
   assert.equal(calls.length,1);assert.equal(calls[0].options.headers.Authorization,'Bearer personal-test-key');
  }finally{global.fetch=fetchOriginal}
 });
+test('ASIN search retries once with a marketplace query when the first snippets lack an EAN',async()=>{
+ const original=global.fetch, calls=[];
+ const uniqueAsin='B'+(Date.now()+1).toString(36).toUpperCase().padStart(9,'0').slice(-9);
+ global.fetch=async(_url,options)=>{
+  const term=JSON.parse(options.body).query;calls.push(term);
+  return new Response(JSON.stringify({results:term.includes('ebay')?[{url:'https://www.ebay.it/itm/123',title:`Luminer ${uniqueAsin}`,content:'EAN 8054383070350'}]:[]}),{status:200});
+ };
+ try {
+  const response=await app.inject({method:'POST',url:'/api/resolve',payload:{input:uniqueAsin,keys:{tavily:'personal-test-key'}}});
+  assert.equal(response.json().results[0].gtin,'8054383070350');
+  assert.equal(calls.length,2);
+  assert.match(calls[1],/EAN ebay/);
+ } finally {global.fetch=original}
+});

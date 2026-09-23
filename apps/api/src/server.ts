@@ -56,11 +56,8 @@ app.post<{Body:{input?:string;nameHint?:string;keys?:{tavily?:string;gemini?:str
  let searchCandidates=cached(searchCacheKey);
  const errors:string[]=[];
  if(!searchCandidates && key && query.kind!=='gtin') {
-  if(!userKeys.tavily && !reserveSharedSearch()) errors.push('Quota giornaliera della ricerca condivisa esaurita. Usa una tua chiave Tavily.');
-  else {
-   try{searchCandidates=await resolveWithSearch(query,{tavily:key,gemini});cache(searchCacheKey,searchCandidates)}
-   catch(error){errors.push((error as Error).message);searchCandidates=[]}
-  }
+  try{searchCandidates=await resolveWithSearch(query,{tavily:key,gemini},()=>!!userKeys.tavily||reserveSharedSearch());cache(searchCacheKey,searchCandidates)}
+  catch(error){errors.push((error as Error).message);searchCandidates=[]}
  }
  const active=query.kind==='asin'&&!query.nameHint
   ? providers.filter(p=>p.name==='Barcode Lookup')

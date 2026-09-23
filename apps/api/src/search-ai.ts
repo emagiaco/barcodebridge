@@ -22,8 +22,8 @@ export function extractDirect(query:ProductQuery, hits:SearchHit[]):RawCandidate
  });
 }
 
-export async function tavilySearch(query:ProductQuery, key:string):Promise<SearchHit[]> {
- const term=query.kind==='asin'?`"${query.value}" EAN GTIN barcode`: `${query.value} EAN barcode`;
+export async function tavilySearch(query:ProductQuery, key:string, fallback=false):Promise<SearchHit[]> {
+ const term=query.kind==='asin'?(fallback?`${query.value} EAN ebay`:`"${query.value}" EAN GTIN barcode`): `${query.value} EAN barcode`;
  const response=await fetch('https://api.tavily.com/search',{
   method:'POST',headers:{'Authorization':`Bearer ${key}`,'Content-Type':'application/json'},
   body:JSON.stringify({query:term,search_depth:'basic',max_results:10,include_answer:false,include_raw_content:false}),
@@ -54,10 +54,16 @@ export async function geminiExtract(query:ProductQuery,hits:SearchHit[],key:stri
  });
 }
 
-export async function resolveWithSearch(query:ProductQuery,keys:KeyOptions):Promise<RawCandidate[]> {
+export async function resolveWithSearch(query:ProductQuery,keys:KeyOptions,allowSearch:()=>boolean=()=>true):Promise<RawCandidate[]> {
  if(!keys.tavily) return [];
+ if(!allowSearch())throw new Error('Quota giornaliera della ricerca condivisa esaurita. Usa una tua chiave Tavily.');
  const hits=await tavilySearch(query,keys.tavily);
- const direct=extractDirect(query,hits);
+ let direct=extractDirect(query,hits);
+ // A second, more specific search is useful when the first snippets contain no verifiable code.
+ if(query.kind==='asin' && !direct.length && allowSearch()) {
+  try {const more=await tavilySearch(query,keys.tavily,true);hits.push(...more);direct=extractDirect(query,hits)}
+  catch { /* Preserve the first search and allow the other providers to run. */ }
+ }
  // One small model call only when deterministic evidence is insufficient.
  const domains=new Set(direct.map(item=>new URL(item.evidence.url).hostname));
  // The optional model must never discard deterministic candidates if its API is unavailable.
