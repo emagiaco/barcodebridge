@@ -1,6 +1,8 @@
 import Fastify from 'fastify';
 import {fileURLToPath} from 'node:url';
 import {parseQuery,rankCandidates,type ProductQuery,type RawCandidate} from '@barcodebridge/core';
+import {verifiedPairs} from './verified-pairs.js';
+import {searchWeb} from './web-search.js';
 export const app=Fastify({logger:false});
 const timeout=5000;
 async function getJson(url:URL) {
@@ -31,13 +33,19 @@ async function barcodeLookup(query:ProductQuery):Promise<RawCandidate[]> {
  const data=await getJson(url);
  return (data.products||[]).slice(0,10).map((p:any)=>({gtin:String(p.barcode_number||''),title:String(p.title||''),brand:p.brand||undefined,asin:p.asin||undefined,evidence:{provider:'Barcode Lookup',url:`https://www.barcodelookup.com/${encodeURIComponent(String(p.barcode_number||''))}`,title:String(p.title||''),brand:p.brand||undefined,asin:p.asin||undefined}}));
 }
-const providers=[{name:'UPCitemdb',run:upcitemdb},{name:'Open Beauty Facts',run:(q:ProductQuery)=>openFacts(q,'world.openbeautyfacts.org','Open Beauty Facts')},{name:'Open Food Facts',run:(q:ProductQuery)=>openFacts(q,'world.openfoodfacts.org','Open Food Facts')},{name:'Barcode Lookup',run:barcodeLookup}];
+const providers=[{name:'Corrispondenze verificate',run:async(q:ProductQuery)=>verifiedPairs(q)},{name:'Ricerca web',run:searchWeb},{name:'UPCitemdb',run:upcitemdb},{name:'Open Beauty Facts',run:(q:ProductQuery)=>openFacts(q,'world.openbeautyfacts.org','Open Beauty Facts')},{name:'Open Food Facts',run:(q:ProductQuery)=>openFacts(q,'world.openfoodfacts.org','Open Food Facts')},{name:'Barcode Lookup',run:barcodeLookup}];
 app.get('/api/health',async()=>({ok:true}));
 app.post<{Body:{input?:string;nameHint?:string}}>('/api/resolve', {bodyLimit:4096}, async(request,reply)=>{
  let query:ProductQuery;try{query=parseQuery(request.body?.input||'',request.body?.nameHint);}catch(error){return reply.code(400).send({error:(error as Error).message});}
- const settled=await Promise.allSettled(providers.map(p=>p.run(query)));
+ const verified=verifiedPairs(query);
+ // A reviewed ASIN pair can be returned immediately without waiting on external APIs.
+ if(query.kind==='asin' && verified.length) return {query,results:rankCandidates(query,verified),providerErrors:[],needsNameHint:false};
+ const active=query.kind==='asin'&&!query.nameHint
+  ? providers.filter(p=>['Ricerca web','Barcode Lookup'].includes(p.name))
+  : providers;
+ const settled=await Promise.allSettled(active.map(p=>p.run(query)));
  const candidates=settled.flatMap(x=>x.status==='fulfilled'?x.value:[]);
- const errors=settled.flatMap((x,i)=>x.status==='rejected'?[`${providers[i].name}: ${(x.reason as Error).message}`]:[]);
+ const errors=settled.flatMap((x,i)=>x.status==='rejected'?[`${active[i].name}: ${(x.reason as Error).message}`]:[]);
  const results=rankCandidates(query,candidates).slice(0,15);
  return {query,results,providerErrors:errors,needsNameHint:query.kind==='asin'&&!query.nameHint&&!results.some(r=>r.reasons.includes('ASIN associato esplicitamente alla fonte'))};
 });

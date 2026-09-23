@@ -1,6 +1,6 @@
 export type InputKind = 'asin' | 'name' | 'gtin';
 export type ProductQuery = { kind: InputKind; value: string; nameHint?: string };
-export type Evidence = { provider: string; url: string; title: string; brand?: string; quantity?: string; asin?: string };
+export type Evidence = { provider: string; url: string; title: string; brand?: string; quantity?: string; asin?: string; checkedOn?: string };
 export type RawCandidate = { gtin: string; title: string; brand?: string; quantity?: string; asin?: string; evidence: Evidence };
 export type Result = { gtin: string; format: 'EAN-13' | 'UPC-A' | 'EAN-8'; title: string; brand?: string; quantity?: string; confidence: 'high' | 'medium' | 'low'; reasons: string[]; evidence: Evidence[] };
 
