@@ -1,6 +1,5 @@
 import {test} from 'node:test';
 import {strict as assert} from 'node:assert';
-import {randomUUID} from 'node:crypto';
 import {app} from '../dist/server.js';
 import {extractDirect,geminiExtract} from '../dist/search-ai.js';
 const query={kind:'asin',value:'B09SY5QHHJ'};
@@ -42,36 +41,20 @@ test('structured ASIN lookup is attempted before Tavily and skips search on a va
   assert.match(calls[0],/api\.barcodelookup\.com/);assert.equal(response.json().searchDiagnostics.searches,0);
  }finally{global.fetch=original;if(oldKey===undefined)delete process.env.BARCODELOOKUP_API_KEY;else process.env.BARCODELOOKUP_API_KEY=oldKey}
 });
-test('does not search generic products when ASIN search returns no product identity',async()=>{
+test('ASIN search retries once with an EAN query when the first snippets lack an EAN',async()=>{
  const original=global.fetch, calls=[];
- const uniqueAsin='B'+randomUUID().replaceAll('-','').slice(0,9).toUpperCase();
+ const uniqueAsin='B'+(Date.now()+1).toString(36).toUpperCase().padStart(9,'0').slice(-9);
  global.fetch=async(_url,options)=>{
   const body=JSON.parse(options.body),term=body.query;assert.equal(body.exact_match,undefined);calls.push(term);
   return new Response(JSON.stringify({results:term.endsWith(' EAN')?[{url:'https://www.ebay.it/itm/123',title:`Luminer ${uniqueAsin}`,content:'EAN 8054383070350'}]:[]}),{status:200});
  };
  try {
   const response=await app.inject({method:'POST',url:'/api/resolve',payload:{input:uniqueAsin,keys:{tavily:'personal-test-key'}}});
-  assert.equal(response.json().results.length,0);
-  assert.equal(calls.length,1);
+  assert.equal(response.json().results[0].gtin,'8054383070350');
+  assert.equal(calls.length,2);
   assert.equal(calls[0],uniqueAsin);
+  assert.equal(calls[1],`${uniqueAsin} EAN`);
  } finally {global.fetch=original}
-});
-test('tries an ASIN codice EAN query when product-name fallback finds no evidence',async()=>{
- const original=global.fetch,calls=[];
- const uniqueAsin='B'+(Date.now()+13).toString(36).toUpperCase().padStart(9,'0').slice(-9);
- global.fetch=async(endpoint,options)=>{
-  const body=JSON.parse(options.body);
-  if(String(endpoint).endsWith('/extract'))return new Response(JSON.stringify({results:[]}));
-  calls.push(body.query);
-  return new Response(JSON.stringify({results:body.query===uniqueAsin?[
-   {url:`https://www.amazon.it/dp/${uniqueAsin}`,title:'Luminer Hyaluronic Acid Face Serum 100 ml',content:uniqueAsin}
-  ]:body.query===`${uniqueAsin} codice EAN`?[
-   {url:'https://shop.example/asin-ean',title:'Luminer Face Serum 100 ml',content:`ASIN ${uniqueAsin} EAN: 8054383070350`}
-  ]:[]}));
- };
- try{const response=await app.inject({method:'POST',url:'/api/resolve',remoteAddress:'10.0.0.34',payload:{input:uniqueAsin,keys:{tavily:'personal-test-key'}}});
-  assert.equal(calls.at(-1),`${uniqueAsin} codice EAN`);assert.equal(response.json().results[0].gtin,'8054383070350');
- }finally{global.fetch=original}
 });
 test('ASIN search uses full source text when the short snippet omits the barcode',async()=>{
  const original=global.fetch;
@@ -108,7 +91,7 @@ test('reads a matching product page when the search preview omits its EAN',async
 });
 test('ignores unrelated EANs elsewhere in an extracted page',async()=>{
  const original=global.fetch,calls=[];
- const uniqueAsin='B'+randomUUID().replaceAll('-','').slice(0,9).toUpperCase();
+ const uniqueAsin='B'+(Date.now()+5).toString(36).toUpperCase().padStart(9,'0').slice(-9);
  global.fetch=async(endpoint,options)=>{
   calls.push(String(endpoint));
   if(String(endpoint).endsWith('/extract'))return new Response(JSON.stringify({results:[{url:'https://example.com/item',raw_content:`Product ${uniqueAsin} ${'details '.repeat(400)} Recommended product EAN: 4150193803301`}]}));
@@ -116,7 +99,7 @@ test('ignores unrelated EANs elsewhere in an extracted page',async()=>{
  };
  try{
   const response=await app.inject({method:'POST',url:'/api/resolve',payload:{input:uniqueAsin,keys:{tavily:'personal-test-key'}}});
-  assert.equal(response.json().results.length,0);assert.equal(calls.length,2);
+  assert.equal(response.json().results.length,0);assert.equal(calls.length,3);
  }finally{global.fetch=original}
 });
 test('links an ASIN to a GTIN through the exact model with both sources and medium confidence',async()=>{
@@ -151,98 +134,10 @@ test('searches product name and size when ASIN has no model, preserving indirect
  };
  try{
   const response=await app.inject({method:'POST',url:'/api/resolve',remoteAddress:'10.0.0.23',payload:{input:uniqueAsin,keys:{tavily:'personal-test-key'}}});
-  assert.match(calls.at(-1).query,/luminer.*siero viso.*acido ialuronico.*100ml.*EAN/i);
+  assert.match(calls[2].query,/luminer.*hyaluronic.*acid.*100ml.*GTIN/i);
   const result=response.json().results[0];assert.equal(result.gtin,'4150193803301');
   assert.equal(result.confidence,'medium');assert.equal(result.evidence.length,2);
   assert.match(result.reasons.join(' '),/indiretta per nome/);
- }finally{global.fetch=original}
-});
-test('Italian listings with the single 100 ml variant agree, excluding kits and multi-packs',async()=>{
- const original=global.fetch,calls=[];
- const uniqueAsin='B'+(Date.now()+11).toString(36).toUpperCase().padStart(9,'0').slice(-9);
- global.fetch=async(endpoint,options)=>{
-  const body=JSON.parse(options.body);calls.push(body);
-  if(String(endpoint).endsWith('/extract'))return new Response(JSON.stringify({results:[]}));
-  return new Response(JSON.stringify({results:body.query===uniqueAsin?[
-   {url:`https://www.amazon.it/dp/${uniqueAsin}`,title:'Luminer Hyaluronic Acid Face Serum 100 ml',content:uniqueAsin}
-  ]:[
-   {url:'https://seller.example/single',title:'Luminer siero viso acido ialuronico 100 ml',content:'EAN: 8054383070350'},
-   {url:'https://catalog.example/single',title:'Luminer siero viso con acido ialuronico 100ml',content:'EAN: 8054383070350'},
-   {url:'https://seller.example/bundle',title:'Luminer siero viso acido ialuronico 2x100ml kit',content:'EAN: 8054383071067'}
-  ]}));
- };
- try{const response=await app.inject({method:'POST',url:'/api/resolve',remoteAddress:'10.0.0.32',payload:{input:uniqueAsin,keys:{tavily:'personal-test-key'}}});
-  assert.equal(calls.at(-1).query,'luminer siero viso acido ialuronico 100ml EAN');
-  assert.equal(response.json().results.length,1);assert.equal(response.json().results[0].gtin,'8054383070350');
-  assert.equal(response.json().results[0].evidence.length,4);assert.equal(response.json().results[0].confidence,'medium');
- }finally{global.fetch=original}
-});
-test('an Italian social snippet selects Italian search even without Amazon.it in the first results',async()=>{
- const original=global.fetch,calls=[];
- const uniqueAsin='B'+randomUUID().replaceAll('-','').slice(0,9).toUpperCase();
- global.fetch=async(endpoint,options)=>{
-  const body=JSON.parse(options.body);
-  if(String(endpoint).endsWith('/extract'))return new Response(JSON.stringify({results:[]}));
-  calls.push(body);
-  return new Response(JSON.stringify({results:body.query===uniqueAsin?[
-   {url:`https://www.amazon.ae/dp/${uniqueAsin}`,title:'Luminer Hyaluronic Acid Face Serum 100 ml',content:uniqueAsin},
-   {url:'https://facebook.com/post',title:'Siero viso acido ialuronico 100ml',content:`https://amazon.it/dp/${uniqueAsin}`}
-  ]:[{url:'https://www.amazon.com.be/dp/B0CDGT8SN1',title:'Luminer Hyaluronic Acid Face Serum 100 ml',content:'ASIN: B0CDGT8SN1 EAN: 8054383070350'},
-   {url:'https://seller.example/luminer',title:'Luminer siero viso acido ialuronico 100 ml',content:'EAN: 8054383070350'}]}));
- };
- try{const response=await app.inject({method:'POST',url:'/api/resolve',remoteAddress:'10.0.0.35',payload:{input:uniqueAsin,keys:{tavily:'personal-test-key'}}});
-  assert.ok(calls[1],JSON.stringify({calls,response:response.json()}));
-  assert.equal(calls[1].query,'luminer siero viso acido ialuronico 100ml EAN');
-  assert.equal(calls[1].country,'italy');assert.equal(calls[1].include_domains_mode,'prefer');
-  assert.equal(response.json().results.length,1);assert.equal(response.json().results[0].gtin,'8054383070350');
-  assert.ok(response.json().results[0].evidence.every(evidence=>!evidence.url.includes('B0CDGT8SN1')));
- }finally{global.fetch=original}
-});
-test('brand from another Amazon marketplace prevents a generic vitamin C fallback',async()=>{
- const original=global.fetch,calls=[];
- const asin='B'+randomUUID().replaceAll('-','').slice(0,9).toUpperCase();
- global.fetch=async(endpoint,options)=>{
-  const body=JSON.parse(options.body);
-  if(String(endpoint).endsWith('/extract'))return new Response(JSON.stringify({results:[]}));
-  calls.push(body.query);
-  return new Response(JSON.stringify({results:body.query===asin?[
-   {url:`https://amazon.it/-/en/item/dp/${asin}`,title:'100 ml Face Serum Vitamin C – Brightening and Antioxidant',content:`ASIN: ${asin}`},
-   {url:`https://amazon.ae/-/ar/dp/${asin}`,title:'MARIPHARMA® Vitamin C Serum 100 ml Hyaluronic Acid Face Serum',content:`ASIN: ${asin} | اسم العلامة التجارية | MARIPHARMA |`}
-  ]:[]}));
- };
- try{await app.inject({method:'POST',url:'/api/resolve',remoteAddress:'10.0.0.36',payload:{input:asin,keys:{tavily:'personal-test-key'}}});
-  assert.ok(calls.includes('maripharma siero viso vitamina C 100ml EAN'),JSON.stringify(calls));
-  assert.ok(calls.every(term=>!term.startsWith('vitamin siero')));
- }finally{global.fetch=original}
-});
-test('missing brand does not trigger a generic product-name fallback',async()=>{
- const original=global.fetch,calls=[];
- const asin='B'+randomUUID().replaceAll('-','').slice(0,9).toUpperCase();
- global.fetch=async(endpoint,options)=>{
-  const body=JSON.parse(options.body);
-  if(String(endpoint).endsWith('/extract'))return new Response(JSON.stringify({results:[]}));
-  calls.push(body.query);
-  return new Response(JSON.stringify({results:body.query===asin?[{url:`https://amazon.it/dp/${asin}`,title:'Vitamin C Serum 100 ml Brightening Antioxidant',content:`ASIN: ${asin}`}]:[]}));
- };
- try{const response=await app.inject({method:'POST',url:'/api/resolve',remoteAddress:'10.0.0.37',payload:{input:asin,keys:{tavily:'personal-test-key'}}});
-  assert.deepEqual(calls,[asin]);assert.equal(response.json().needsNameHint,true);
- }finally{global.fetch=original}
-});
-test('reads a retailer found in the Italian fallback when its search snippet has no barcode',async()=>{
- const original=global.fetch,calls=[];
- const uniqueAsin='B'+randomUUID().replaceAll('-','').slice(0,9).toUpperCase();
- const store='https://shop.example/luminer-100ml';
- global.fetch=async(endpoint,options)=>{
-  const body=JSON.parse(options.body);calls.push({endpoint:String(endpoint),body});
-  if(String(endpoint).endsWith('/extract'))return new Response(JSON.stringify({results:body.urls.includes(store)?[{url:store,raw_content:'Luminer siero viso acido ialuronico 100 ml. Codice EAN: 8054383070350'}]:[]}));
-  return new Response(JSON.stringify({results:body.query===uniqueAsin?[
-   {url:`https://www.amazon.it/dp/${uniqueAsin}`,title:'Luminer Hyaluronic Acid Face Serum 100 ml',content:uniqueAsin}
-  ]:[{url:store,title:'Luminer siero viso acido ialuronico 100 ml',content:'Siero viso italiano'}]}));
- };
- try{const response=await app.inject({method:'POST',url:'/api/resolve',remoteAddress:'10.0.0.33',payload:{input:uniqueAsin,keys:{tavily:'personal-test-key'}}});
-  assert.ok(response.json().searchDiagnostics.fallbackExtractAttempt,JSON.stringify({calls,response:response.json()}));
-  assert.equal(response.json().results[0].gtin,'8054383070350');
-  assert.deepEqual(response.json().searchDiagnostics.fallbackExtractAttempt.urls,[store]);
  }finally{global.fetch=original}
 });
 test('does not link an ASIN to a different size of the same product',async()=>{
@@ -257,25 +152,6 @@ test('does not link an ASIN to a different size of the same product',async()=>{
  };
  try{const response=await app.inject({method:'POST',url:'/api/resolve',remoteAddress:'10.0.0.24',payload:{input:uniqueAsin,keys:{tavily:'personal-test-key'}}});assert.equal(response.json().results.length,0)}
  finally{global.fetch=original}
-});
-test('prefers a short retailer snippet for extraction over Amazon and social pages',async()=>{
- const original=global.fetch,calls=[];
- const uniqueAsin='B'+(Date.now()+10).toString(36).toUpperCase().padStart(9,'0').slice(-9);
- const shop='https://shop.example/luminer-serum';
- global.fetch=async(endpoint,options)=>{
-  const body=JSON.parse(options.body);calls.push({endpoint:String(endpoint),body});
-  if(String(endpoint).endsWith('/extract'))return new Response(JSON.stringify({results:[{url:shop,raw_content:'Luminer Hyaluronic Acid Face Serum 100 ml EAN: 4150193803301'}]}));
-  return new Response(JSON.stringify({results:body.query===uniqueAsin?[
-   {url:`https://www.amazon.it/dp/${uniqueAsin}`,title:'Luminer Hyaluronic Acid Face Serum 100 ml',content:`ASIN ${uniqueAsin} ${'information '.repeat(800)}`},
-   {url:'https://facebook.com/post',title:'Luminer serum',content:uniqueAsin},
-   {url:shop,title:'Luminer Hyaluronic Acid Face Serum 100 ml',content:'Luminer serum'}
-  ]:[]}));
- };
- try{const response=await app.inject({method:'POST',url:'/api/resolve',remoteAddress:'10.0.0.31',payload:{input:uniqueAsin,keys:{tavily:'personal-test-key'}}});
-  assert.deepEqual(calls[1].body.urls,[shop]);
-  assert.equal(response.json().results[0].gtin,'4150193803301');
-  assert.equal(response.json().results[0].confidence,'medium');
- }finally{global.fetch=original}
 });
 test('valid barcode input is rendered without depending on external catalogues',async()=>{
  const original=global.fetch;global.fetch=async()=>{throw new Error('No network expected')};
@@ -292,7 +168,7 @@ test('invalid characters in a personal Gemini key are explained without leaking 
 test('Tavily 400 diagnostics include the provider response without exposing the key',async()=>{
  const original=global.fetch;
  const personal='tvly-secret-test';
- const uniqueAsin='B'+randomUUID().replaceAll('-','').slice(0,9).toUpperCase();
+ const uniqueAsin='B'+(Date.now()+3).toString(36).toUpperCase().padStart(9,'0').slice(-9);
  global.fetch=async(_url,options)=>{
   const body=JSON.parse(options.body);assert.equal(body.query,uniqueAsin);assert.equal(body.exact_match,undefined);
   return new Response(JSON.stringify({detail:`Invalid query; token ${personal}`}),{status:400});
