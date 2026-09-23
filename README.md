@@ -28,6 +28,7 @@ Configura `TAVILY_API_KEY` nel backend per offrire ricerche condivise (massimo 2
 ### Chiavi personali e cache
 
 Le chiavi personali possono essere usate per una sola sessione o conservate **nel database IndexedDB del browser**, cifrate con AES-GCM e una frase scelta dall'utente. La frase non viene inviata al server. Le chiavi decifrate vengono inviate al backend soltanto per eseguire la ricerca e non sono salvate nel suo database. Usa HTTPS quando l'app non gira su localhost. Non salvare le chiavi in un browser condiviso se non hai il controllo del dispositivo.
+Se accedi al server tramite un indirizzo IP in HTTP (per esempio `http://192.168.x.x:5173`), il browser non rende disponibile Web Crypto: puoi inserire le chiavi e cercare senza premere «Salva qui», ma evita di inviare chiavi tramite HTTP su reti non fidate. Per salvarle cifrate, apri `http://localhost:5173` sullo stesso computer oppure configura HTTPS.
 
 Il backend usa un piccolo database SQLite (`BARCODEBRIDGE_DB_PATH`, predefinito `./data/barcodebridge.sqlite`) per memorizzare **solo i risultati positivi**, senza chiavi, per sette giorni. Ripetere una ricerca già riuscita non consuma una nuova chiamata web. I limiti e le quote dei fornitori possono cambiare: verifica il piano associato alle tue chiavi.
 

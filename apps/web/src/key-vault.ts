@@ -1,6 +1,10 @@
 type Keys={tavily:string;gemini:string};
 type RecordValue={id:string;salt:number[];iv:number[];cipher:number[]};
 const encoder=new TextEncoder();
+function webCrypto():Crypto{
+ if(!globalThis.crypto?.subtle)throw new Error('Il salvataggio cifrato richiede HTTPS o localhost. Apri il sito tramite HTTPS oppure usa le chiavi solo per questa sessione, senza premere Salva qui.');
+ return globalThis.crypto;
+}
 function openDb():Promise<IDBDatabase>{
  return new Promise((resolve,reject)=>{
   const req=indexedDB.open('barcodebridge-private',1);
@@ -16,11 +20,13 @@ async function readRecord():Promise<RecordValue|undefined>{
  });
 }
 async function derive(passphrase:string,salt:Uint8Array) {
+ const crypto=webCrypto();
  const material=await crypto.subtle.importKey('raw',encoder.encode(passphrase),'PBKDF2',false,['deriveKey']);
  return crypto.subtle.deriveKey({name:'PBKDF2',salt:new Uint8Array(salt),iterations:250_000,hash:'SHA-256'},material,{name:'AES-GCM',length:256},false,['encrypt','decrypt']);
 }
 export async function hasSavedKeys(){return !!await readRecord()}
 export async function saveKeys(keys:Keys,passphrase:string){
+ const crypto=webCrypto();
  if(passphrase.length<12)throw new Error('Usa una frase di almeno 12 caratteri.');
  const salt=crypto.getRandomValues(new Uint8Array(16)),iv=crypto.getRandomValues(new Uint8Array(12));
  const key=await derive(passphrase,salt);
@@ -31,6 +37,7 @@ export async function saveKeys(keys:Keys,passphrase:string){
  });db.close();
 }
 export async function unlockKeys(passphrase:string):Promise<Keys>{
+ const crypto=webCrypto();
  const record=await readRecord();if(!record)throw new Error('Nessuna chiave salvata in questo browser.');
  try{const key=await derive(passphrase,new Uint8Array(record.salt));
   const bytes=await crypto.subtle.decrypt({name:'AES-GCM',iv:new Uint8Array(record.iv)},key,new Uint8Array(record.cipher));
