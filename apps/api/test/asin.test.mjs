@@ -42,19 +42,18 @@ test('structured ASIN lookup is attempted before Tavily and skips search on a va
   assert.match(calls[0],/api\.barcodelookup\.com/);assert.equal(response.json().searchDiagnostics.searches,0);
  }finally{global.fetch=original;if(oldKey===undefined)delete process.env.BARCODELOOKUP_API_KEY;else process.env.BARCODELOOKUP_API_KEY=oldKey}
 });
-test('ASIN search retries once with an EAN query when the first snippets lack an EAN',async()=>{
+test('does not search generic products when ASIN search returns no product identity',async()=>{
  const original=global.fetch, calls=[];
- const uniqueAsin='B'+(Date.now()+1).toString(36).toUpperCase().padStart(9,'0').slice(-9);
+ const uniqueAsin='B'+randomUUID().replaceAll('-','').slice(0,9).toUpperCase();
  global.fetch=async(_url,options)=>{
   const body=JSON.parse(options.body),term=body.query;assert.equal(body.exact_match,undefined);calls.push(term);
   return new Response(JSON.stringify({results:term.endsWith(' EAN')?[{url:'https://www.ebay.it/itm/123',title:`Luminer ${uniqueAsin}`,content:'EAN 8054383070350'}]:[]}),{status:200});
  };
  try {
   const response=await app.inject({method:'POST',url:'/api/resolve',payload:{input:uniqueAsin,keys:{tavily:'personal-test-key'}}});
-  assert.equal(response.json().results[0].gtin,'8054383070350');
-  assert.equal(calls.length,2);
+  assert.equal(response.json().results.length,0);
+  assert.equal(calls.length,1);
   assert.equal(calls[0],uniqueAsin);
-  assert.equal(calls[1],`${uniqueAsin} EAN`);
  } finally {global.fetch=original}
 });
 test('tries an ASIN codice EAN query when product-name fallback finds no evidence',async()=>{
@@ -109,7 +108,7 @@ test('reads a matching product page when the search preview omits its EAN',async
 });
 test('ignores unrelated EANs elsewhere in an extracted page',async()=>{
  const original=global.fetch,calls=[];
- const uniqueAsin='B'+(Date.now()+5).toString(36).toUpperCase().padStart(9,'0').slice(-9);
+ const uniqueAsin='B'+randomUUID().replaceAll('-','').slice(0,9).toUpperCase();
  global.fetch=async(endpoint,options)=>{
   calls.push(String(endpoint));
   if(String(endpoint).endsWith('/extract'))return new Response(JSON.stringify({results:[{url:'https://example.com/item',raw_content:`Product ${uniqueAsin} ${'details '.repeat(400)} Recommended product EAN: 4150193803301`}]}));
@@ -117,7 +116,7 @@ test('ignores unrelated EANs elsewhere in an extracted page',async()=>{
  };
  try{
   const response=await app.inject({method:'POST',url:'/api/resolve',payload:{input:uniqueAsin,keys:{tavily:'personal-test-key'}}});
-  assert.equal(response.json().results.length,0);assert.equal(calls.length,4);
+  assert.equal(response.json().results.length,0);assert.equal(calls.length,2);
  }finally{global.fetch=original}
 });
 test('links an ASIN to a GTIN through the exact model with both sources and medium confidence',async()=>{
@@ -199,6 +198,36 @@ test('an Italian social snippet selects Italian search even without Amazon.it in
   assert.ok(response.json().results[0].evidence.every(evidence=>!evidence.url.includes('B0CDGT8SN1')));
  }finally{global.fetch=original}
 });
+test('brand from another Amazon marketplace prevents a generic vitamin C fallback',async()=>{
+ const original=global.fetch,calls=[];
+ const asin='B'+randomUUID().replaceAll('-','').slice(0,9).toUpperCase();
+ global.fetch=async(endpoint,options)=>{
+  const body=JSON.parse(options.body);
+  if(String(endpoint).endsWith('/extract'))return new Response(JSON.stringify({results:[]}));
+  calls.push(body.query);
+  return new Response(JSON.stringify({results:body.query===asin?[
+   {url:`https://amazon.it/-/en/item/dp/${asin}`,title:'100 ml Face Serum Vitamin C – Brightening and Antioxidant',content:`ASIN: ${asin}`},
+   {url:`https://amazon.ae/-/ar/dp/${asin}`,title:'MARIPHARMA® Vitamin C Serum 100 ml Hyaluronic Acid Face Serum',content:`ASIN: ${asin} | اسم العلامة التجارية | MARIPHARMA |`}
+  ]:[]}));
+ };
+ try{await app.inject({method:'POST',url:'/api/resolve',remoteAddress:'10.0.0.36',payload:{input:asin,keys:{tavily:'personal-test-key'}}});
+  assert.ok(calls.includes('maripharma siero viso vitamina C 100ml EAN'),JSON.stringify(calls));
+  assert.ok(calls.every(term=>!term.startsWith('vitamin siero')));
+ }finally{global.fetch=original}
+});
+test('missing brand does not trigger a generic product-name fallback',async()=>{
+ const original=global.fetch,calls=[];
+ const asin='B'+randomUUID().replaceAll('-','').slice(0,9).toUpperCase();
+ global.fetch=async(endpoint,options)=>{
+  const body=JSON.parse(options.body);
+  if(String(endpoint).endsWith('/extract'))return new Response(JSON.stringify({results:[]}));
+  calls.push(body.query);
+  return new Response(JSON.stringify({results:body.query===asin?[{url:`https://amazon.it/dp/${asin}`,title:'Vitamin C Serum 100 ml Brightening Antioxidant',content:`ASIN: ${asin}`}]:[]}));
+ };
+ try{const response=await app.inject({method:'POST',url:'/api/resolve',remoteAddress:'10.0.0.37',payload:{input:asin,keys:{tavily:'personal-test-key'}}});
+  assert.deepEqual(calls,[asin]);assert.equal(response.json().needsNameHint,true);
+ }finally{global.fetch=original}
+});
 test('reads a retailer found in the Italian fallback when its search snippet has no barcode',async()=>{
  const original=global.fetch,calls=[];
  const uniqueAsin='B'+randomUUID().replaceAll('-','').slice(0,9).toUpperCase();
@@ -263,7 +292,7 @@ test('invalid characters in a personal Gemini key are explained without leaking 
 test('Tavily 400 diagnostics include the provider response without exposing the key',async()=>{
  const original=global.fetch;
  const personal='tvly-secret-test';
- const uniqueAsin='B'+(Date.now()+3).toString(36).toUpperCase().padStart(9,'0').slice(-9);
+ const uniqueAsin='B'+randomUUID().replaceAll('-','').slice(0,9).toUpperCase();
  global.fetch=async(_url,options)=>{
   const body=JSON.parse(options.body);assert.equal(body.query,uniqueAsin);assert.equal(body.exact_match,undefined);
   return new Response(JSON.stringify({detail:`Invalid query; token ${personal}`}),{status:400});

@@ -30,18 +30,20 @@ function extractByModel(query:ProductQuery,model:string,source:SearchHit,hits:Se
    evidence:{provider:`Web · ${new URL(hit.url).hostname}`,url:hit.url,title:hit.title}}));
  });
 }
-const genericWords=new Set(['face','serum','siero','viso','with','and','the','for','anti','natural','care','skin','ml','avec','visage']);
+const genericWords=new Set(['face','serum','siero','viso','with','and','the','for','anti','natural','care','skin','ml','avec','visage','vitamin','vitamina','brightening','antioxidant','hyaluronic','acid','cream','crema']);
 const retailer=(url:string)=>{const host=new URL(url).hostname.toLowerCase();return !/(^|\.)(?:amazon\.[a-z.]+|facebook\.com|instagram\.com|tiktok\.com|youtube\.com|ubuy\.[a-z.]+)$/.test(host)};
 function nameAnchor(query:ProductQuery,hits:SearchHit[]){
  const source=hits.filter(hit=>mentionsAsin(query,hit)&&/^https:\/\/[^/]*amazon\./i.test(hit.url))
-  .filter(hit=>/\b\d{2,4}\s?ml\b/i.test(hit.title)).sort((a,b)=>b.title.length-a.title.length)[0];
+  .filter(hit=>/\b\d{2,4}\s?ml\b/i.test(hit.title))
+  .filter(hit=>{const first=hit.title.replace(/^[^\p{L}]*/u,'').match(/^[\p{L}]{4,}/u)?.[0];return first&&!genericWords.has(first.toLowerCase())})
+  .sort((a,b)=>Number(/^[A-Z]{4,}/.test(b.title))-Number(/^[A-Z]{4,}/.test(a.title)))[0];
  if(!source)return undefined;
  const title=source.title.split(/\s[:|]\s|\.\.\./)[0].replace(/[®™]/g,'').trim();
- const words=(title.toLowerCase().match(/[a-z]{4,}/g)||[]).filter(word=>!genericWords.has(word));
+ const words=(title.toLowerCase().match(/[a-z]{4,}/g)||[]);
  const size=title.match(/\b\d{2,4}\s?ml\b/i)?.[0].replace(/\s/g,'').toLowerCase();
  const brand=words[0];
- if(!brand||!size||new Set(words.slice(1)).size<2)return undefined;
- return {source,title,brand,size,details:[...new Set(words.slice(1))],type:/\b(?:serum|siero|sérum)\b/i.test(title)?'serum':undefined};
+ if(!brand||genericWords.has(brand)||!size||new Set(words.slice(1).filter(word=>!['face','serum','siero','viso','ml'].includes(word))).size<2)return undefined;
+ return {source,title,brand,size,details:[...new Set(words.slice(1).filter(word=>!['face','serum','siero','viso','ml'].includes(word)))],type:/\b(?:serum|siero|sérum)\b/i.test(title)?'serum':undefined};
 }
 function extractByName(query:ProductQuery,anchor:NonNullable<ReturnType<typeof nameAnchor>>,hits:SearchHit[]):RawCandidate[]{
  return hits.flatMap(hit=>{
@@ -164,8 +166,8 @@ export async function resolveWithSearch(query:ProductQuery,keys:KeyOptions,allow
  if(query.kind==='asin' && !direct.length && allowSearch()) {
   const model=productModel(query,hits),anchor=!model?nameAnchor(query,hits):undefined;
   const italian=anchor&&hits.some(hit=>mentionsAsin(query,hit)&&/(?:amazon\.it|\bsiero\s+viso\b|\bacido\s+ialuronico\b)/i.test(`${hit.url} ${hit.title} ${hit.content.slice(0,500)}`));
-  const nameTerm=anchor?italian?`${anchor.brand} ${anchor.type==='serum'?'siero viso':''} ${anchor.details.includes('hyaluronic')?'acido ialuronico':anchor.details.slice(0,2).join(' ')} ${anchor.size} EAN`.replace(/\s+/g,' ').trim():`${anchor.brand} ${anchor.type||''} ${anchor.details.filter(word=>word!=='wrinkle').slice(0,2).join(' ')} ${anchor.size} EAN`.replace(/\s+/g,' ').trim():undefined;
-  try {const more=await tavilySearch(query,keys.tavily,true,diagnostics,model?`${model[0]} GTIN UPC`:nameTerm);searchedFallback=true;hits.push(...more);direct=extractDirect(query,hits);if(model&&!direct.length)linked=extractByModel(query,model[0],model[1].source,more);else if(anchor&&!direct.length){linked=extractByName(query,anchor,[...extractedHits,...more]);if(!linked.length&&allowSearch()){const extractedMore=await tavilyExtract(query,more,keys.tavily,diagnostics,'fallbackExtractAttempt',anchor);hits.push(...extractedMore);direct.push(...extractDirect(query,extractedMore));linked=extractByName(query,anchor,extractedMore)}}if(diagnostics)diagnostics.searches++}
+  const nameTerm=anchor?italian?`${anchor.brand} ${anchor.type==='serum'?'siero viso':''} ${/\bvitamin\s+c\b/i.test(anchor.title)?'vitamina C':anchor.details.includes('hyaluronic')?'acido ialuronico':anchor.details.slice(0,2).join(' ')} ${anchor.size} EAN`.replace(/\s+/g,' ').trim():`${anchor.brand} ${anchor.type||''} ${/\bvitamin\s+c\b/i.test(anchor.title)?'vitamin C':anchor.details.filter(word=>word!=='wrinkle').slice(0,2).join(' ')} ${anchor.size} EAN`.replace(/\s+/g,' ').trim():undefined;
+  try {if(!model&&!anchor)throw new Error('Marca del prodotto non identificata: aggiungi il nome.');const more=await tavilySearch(query,keys.tavily,true,diagnostics,model?`${model[0]} GTIN UPC`:nameTerm);searchedFallback=true;hits.push(...more);direct=extractDirect(query,hits);if(model&&!direct.length)linked=extractByModel(query,model[0],model[1].source,more);else if(anchor&&!direct.length){linked=extractByName(query,anchor,[...extractedHits,...more]);if(!linked.length&&allowSearch()){const extractedMore=await tavilyExtract(query,more,keys.tavily,diagnostics,'fallbackExtractAttempt',anchor);hits.push(...extractedMore);direct.push(...extractDirect(query,extractedMore));linked=extractByName(query,anchor,extractedMore)}}if(diagnostics)diagnostics.searches++}
   catch(error) { if(diagnostics)diagnostics.aiError=`Seconda ricerca: ${(error as Error).message}`; }
  }
  if(query.kind==='asin'&&searchedFallback&&!direct.length&&!linked.length&&allowSearch()){
