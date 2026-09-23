@@ -62,6 +62,36 @@ test('ASIN search uses full source text when the short snippet omits the barcode
   assert.equal(calls[0].include_raw_content,'text');
  }finally{global.fetch=original}
 });
+test('reads a matching product page when the search preview omits its EAN',async()=>{
+ const original=global.fetch,calls=[];
+ const uniqueAsin='B'+(Date.now()+4).toString(36).toUpperCase().padStart(9,'0').slice(-9);
+ const url='https://www.odkarla.sk/serum-la-roche-posay-pre-vsetky-typy-pleti~p1838182';
+ global.fetch=async(endpoint,options)=>{
+  const body=JSON.parse(options.body);calls.push({endpoint:String(endpoint),body});
+  if(String(endpoint).endsWith('/search'))return new Response(JSON.stringify({results:[{url,title:'La Roche-Posay C12 30 ml',content:`ASIN: ${uniqueAsin}` }]}));
+  assert.equal(body.extract_depth,'basic');assert.deepEqual(body.urls,[url]);
+  return new Response(JSON.stringify({results:[{url,raw_content:`Sérum La Roche-Posay 30 ml EAN: 4150193803301 ASIN: ${uniqueAsin}`}],failed_results:[]}));
+ };
+ try{
+  const response=await app.inject({method:'POST',url:'/api/resolve',payload:{input:uniqueAsin,keys:{tavily:'personal-test-key'}}});
+  assert.equal(response.statusCode,200);assert.equal(response.json().results[0].gtin,'4150193803301');
+  assert.equal(calls.length,2);assert.ok(calls[1].endpoint.endsWith('/extract'));
+  assert.equal(response.json().searchDiagnostics.extractAttempt.extracted,1);
+ }finally{global.fetch=original}
+});
+test('ignores unrelated EANs elsewhere in an extracted page',async()=>{
+ const original=global.fetch,calls=[];
+ const uniqueAsin='B'+(Date.now()+5).toString(36).toUpperCase().padStart(9,'0').slice(-9);
+ global.fetch=async(endpoint,options)=>{
+  calls.push(String(endpoint));
+  if(String(endpoint).endsWith('/extract'))return new Response(JSON.stringify({results:[{url:'https://example.com/item',raw_content:`Product ${uniqueAsin} ${'details '.repeat(400)} Recommended product EAN: 4150193803301`}]}));
+  return new Response(JSON.stringify({results:String(endpoint).endsWith('/search')&&JSON.parse(options.body).query===uniqueAsin?[{url:'https://example.com/item',title:'Product',content:uniqueAsin}]:[]}));
+ };
+ try{
+  const response=await app.inject({method:'POST',url:'/api/resolve',payload:{input:uniqueAsin,keys:{tavily:'personal-test-key'}}});
+  assert.equal(response.json().results.length,0);assert.equal(calls.length,3);
+ }finally{global.fetch=original}
+});
 test('valid barcode input is rendered without depending on external catalogues',async()=>{
  const original=global.fetch;global.fetch=async()=>{throw new Error('No network expected')};
  try{const response=await app.inject({method:'POST',url:'/api/resolve',payload:{input:'8054383070350'}});

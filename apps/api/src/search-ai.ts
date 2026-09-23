@@ -3,7 +3,7 @@ import {validGtin, type ProductQuery, type RawCandidate} from '@barcodebridge/co
 export type SearchHit = {url:string; title:string; content:string};
 export type KeyOptions = {tavily?:string; gemini?:string};
 export type SearchAttempt={query:string;startedAt:string;durationMs:number;httpStatus:number;resultCount:number;results:{url:string;title:string;excerpt:string;rawLength:number}[];error?:string};
-export type SearchDiagnostics = {searches:number;pages:number;asinPages:number;verifiedCodes:number;samplePages?:string[];aiError?:string;attempts?:SearchAttempt[];aiAttempt?:{model:string;startedAt:string;httpStatus:number;sourceCount:number;error?:string}};
+export type SearchDiagnostics = {searches:number;pages:number;asinPages:number;verifiedCodes:number;samplePages?:string[];aiError?:string;attempts?:SearchAttempt[];extractAttempt?:{urls:string[];startedAt:string;httpStatus:number;extracted:number;failed:number;error?:string};aiAttempt?:{model:string;startedAt:string;httpStatus:number;sourceCount:number;error?:string}};
 
 const labels = /\b(?:EAN(?:-?13)?|UPC(?:-?A)?|GTIN(?:-?13)?)\s*[:#-]?\s*(\d{13}|\d{12}|\d{8})\b/gi;
 const isSafeUrl = (input:string) => {
@@ -46,6 +46,30 @@ export async function tavilySearch(query:ProductQuery, key:string, fallback=fals
  return results;
 }
 
+async function tavilyExtract(query:ProductQuery,hits:SearchHit[],key:string,diagnostics?:SearchDiagnostics):Promise<SearchHit[]> {
+ const selected=[...new Map(hits.filter(hit=>mentionsAsin(query,hit)).map(hit=>[hit.url,hit])).values()].slice(0,5);
+ if(!selected.length)return [];
+ const urls=selected.map(hit=>hit.url);
+ if(diagnostics)diagnostics.extractAttempt={urls,startedAt:new Date().toISOString(),httpStatus:0,extracted:0,failed:0};
+ const response=await fetch('https://api.tavily.com/extract',{
+  method:'POST',headers:{'Authorization':`Bearer ${key}`,'Content-Type':'application/json'},
+  body:JSON.stringify({urls,extract_depth:'basic',format:'text'}),signal:AbortSignal.timeout(12000),
+ });
+ if(diagnostics?.extractAttempt)diagnostics.extractAttempt.httpStatus=response.status;
+ if(!response.ok){if(diagnostics?.extractAttempt)diagnostics.extractAttempt.error=(await response.text()).replaceAll(key,'[REDACTED]').slice(0,1000);throw new Error(`Estrazione pagine: HTTP ${response.status}`)}
+ const data=await response.json() as {results?:{url?:string;raw_content?:string}[];failed_results?:unknown[]};
+ if(diagnostics?.extractAttempt){diagnostics.extractAttempt.extracted=data.results?.length||0;diagnostics.extractAttempt.failed=data.failed_results?.length||0;}
+ return (data.results||[]).flatMap(item=>{
+  const original=selected.find(hit=>hit.url===item.url);
+  if(!original||typeof item.raw_content!=='string')return [];
+  // The ASIN and barcode must occur in the page body, close enough to refer to the same product.
+  const raw=item.raw_content,upper=raw.toUpperCase(),windows:string[]=[];
+  for(let position=upper.indexOf(query.value);position!==-1&&windows.length<8;position=upper.indexOf(query.value,position+query.value.length))
+   windows.push(raw.slice(Math.max(0,position-1200),Math.min(raw.length,position+1200)));
+  return windows.map(content=>({...original,content}));
+ });
+}
+
 export async function geminiExtract(query:ProductQuery,hits:SearchHit[],key:string,diagnostics?:SearchDiagnostics):Promise<RawCandidate[]> {
  if(!hits.length) return [];
  const sources=hits.slice(0,8).map((hit,index)=>({index,title:hit.title,content:hit.content.slice(0,1800),url:hit.url}));
@@ -73,6 +97,10 @@ export async function resolveWithSearch(query:ProductQuery,keys:KeyOptions,allow
  const hits=await tavilySearch(query,keys.tavily,false,diagnostics);
  if(diagnostics)diagnostics.searches++;
  let direct=extractDirect(query,hits);
+ if(query.kind==='asin'&&!direct.length&&hits.some(hit=>mentionsAsin(query,hit))&&allowSearch()){
+  try{const extracted=await tavilyExtract(query,hits,keys.tavily,diagnostics);hits.push(...extracted);direct=extractDirect(query,extracted)}
+  catch(error){if(diagnostics)diagnostics.aiError=`Pagine: ${(error as Error).message}`}
+ }
  // A second, more specific search is useful when the first snippets contain no verifiable code.
  if(query.kind==='asin' && !direct.length && allowSearch()) {
   try {const more=await tavilySearch(query,keys.tavily,true,diagnostics);hits.push(...more);direct=extractDirect(query,hits);if(diagnostics)diagnostics.searches++}
