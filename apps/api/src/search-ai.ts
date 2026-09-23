@@ -30,6 +30,7 @@ function extractByModel(query:ProductQuery,model:string,source:SearchHit,hits:Se
  });
 }
 const genericWords=new Set(['face','serum','siero','viso','with','and','the','for','anti','natural','care','skin','ml','avec','visage']);
+const retailer=(url:string)=>{const host=new URL(url).hostname.toLowerCase();return !/(^|\.)(?:amazon\.[a-z.]+|facebook\.com|instagram\.com|tiktok\.com|youtube\.com)$/.test(host)};
 function nameAnchor(query:ProductQuery,hits:SearchHit[]){
  const source=hits.filter(hit=>mentionsAsin(query,hit)&&/^https:\/\/[^/]*amazon\./i.test(hit.url))
   .filter(hit=>/\b\d{2,4}\s?ml\b/i.test(hit.title)).sort((a,b)=>b.title.length-a.title.length)[0];
@@ -39,7 +40,7 @@ function nameAnchor(query:ProductQuery,hits:SearchHit[]){
  const size=title.match(/\b\d{2,4}\s?ml\b/i)?.[0].replace(/\s/g,'').toLowerCase();
  const brand=words[0];
  if(!brand||!size||new Set(words.slice(1)).size<2)return undefined;
- return {source,title,brand,size,details:[...new Set(words.slice(1))]};
+ return {source,title,brand,size,details:[...new Set(words.slice(1))],type:/\b(?:serum|siero|sérum)\b/i.test(title)?'serum':undefined};
 }
 function extractByName(query:ProductQuery,anchor:NonNullable<ReturnType<typeof nameAnchor>>,hits:SearchHit[]):RawCandidate[]{
  return hits.flatMap(hit=>{
@@ -95,7 +96,10 @@ export async function tavilySearch(query:ProductQuery, key:string, fallback=fals
 }
 
 async function tavilyExtract(query:ProductQuery,hits:SearchHit[],key:string,diagnostics?:SearchDiagnostics):Promise<SearchHit[]> {
- const selected=[...new Map(hits.filter(hit=>mentionsAsin(query,hit)).map(hit=>[hit.url,hit])).values()].slice(0,5);
+ const anchor=nameAnchor(query,hits);
+ const selected=[...new Map(hits.filter(hit=>retailer(hit.url)&&(
+  mentionsAsin(query,hit)||!!anchor&&(hit.title.toLowerCase().includes(anchor.brand)&&hit.title.toLowerCase().includes(anchor.type||anchor.brand))
+ )).map(hit=>[hit.url,hit])).values()].sort((a,b)=>a.content.length-b.content.length).slice(0,5);
  if(!selected.length)return [];
  const urls=selected.map(hit=>hit.url);
  if(diagnostics)diagnostics.extractAttempt={urls,startedAt:new Date().toISOString(),httpStatus:0,extracted:0,failed:0};
@@ -114,7 +118,7 @@ async function tavilyExtract(query:ProductQuery,hits:SearchHit[],key:string,diag
   const raw=item.raw_content,upper=raw.toUpperCase(),windows:string[]=[];
   for(let position=upper.indexOf(query.value);position!==-1&&windows.length<8;position=upper.indexOf(query.value,position+query.value.length))
    windows.push(raw.slice(Math.max(0,position-1200),Math.min(raw.length,position+1200)));
-  return windows.map(content=>({...original,content}));
+  return windows.length?windows.map(content=>({...original,content})):anchor&&original.title.toLowerCase().includes(anchor.brand)?[{...original,content:raw.slice(0,100000)}]:[];
  });
 }
 
@@ -145,16 +149,17 @@ export async function resolveWithSearch(query:ProductQuery,keys:KeyOptions,allow
  const hits=await tavilySearch(query,keys.tavily,false,diagnostics);
  if(diagnostics)diagnostics.searches++;
  let direct=extractDirect(query,hits);
+ let extractedHits:SearchHit[]=[];
  if(query.kind==='asin'&&!direct.length&&hits.some(hit=>mentionsAsin(query,hit))&&allowSearch()){
-  try{const extracted=await tavilyExtract(query,hits,keys.tavily,diagnostics);hits.push(...extracted);direct=extractDirect(query,extracted)}
+  try{extractedHits=await tavilyExtract(query,hits,keys.tavily,diagnostics);hits.push(...extractedHits);direct=extractDirect(query,extractedHits)}
   catch(error){if(diagnostics)diagnostics.aiError=`Pagine: ${(error as Error).message}`}
  }
  // A second, more specific search is useful when the first snippets contain no verifiable code.
  let linked:RawCandidate[]=[];
  if(query.kind==='asin' && !direct.length && allowSearch()) {
   const model=productModel(query,hits),anchor=!model?nameAnchor(query,hits):undefined;
-  const nameTerm=anchor?`${anchor.brand} ${anchor.details.slice(0,3).join(' ')} ${anchor.size} GTIN`:undefined;
-  try {const more=await tavilySearch(query,keys.tavily,true,diagnostics,model?`${model[0]} GTIN UPC`:nameTerm);hits.push(...more);direct=extractDirect(query,hits);if(model&&!direct.length)linked=extractByModel(query,model[0],model[1].source,more);else if(anchor&&!direct.length)linked=extractByName(query,anchor,more);if(diagnostics)diagnostics.searches++}
+  const nameTerm=anchor?`${anchor.brand} ${anchor.type||''} ${anchor.details.filter(word=>word!=='wrinkle').slice(0,2).join(' ')} ${anchor.size} EAN`.replace(/\s+/g,' ').trim():undefined;
+  try {const more=await tavilySearch(query,keys.tavily,true,diagnostics,model?`${model[0]} GTIN UPC`:nameTerm);hits.push(...more);direct=extractDirect(query,hits);if(model&&!direct.length)linked=extractByModel(query,model[0],model[1].source,more);else if(anchor&&!direct.length)linked=extractByName(query,anchor,[...extractedHits,...more]);if(diagnostics)diagnostics.searches++}
   catch(error) { if(diagnostics)diagnostics.aiError=`Seconda ricerca: ${(error as Error).message}`; }
  }
  // One small model call only when deterministic evidence is insufficient.

@@ -81,7 +81,7 @@ app.post<{Body:{input?:string;nameHint?:string;keys?:{tavily?:string;gemini?:str
  errors.push(...directErrors);
  errors.push(...settled.flatMap((x,i)=>x.status==='rejected'?[`${active[i].name}: ${(x.reason as Error).message}`]:[]));
  const results=rankCandidates(query,candidates).slice(0,15);
- return {query,results,providerErrors:errors,needsNameHint:query.kind==='asin'&&!query.nameHint&&!results.length,searchAvailable:!!key,searchDiagnostics,debug:{startedAt,finishedAt:new Date().toISOString(),providerTrace}};
+ return {query,results,providerErrors:errors,needsNameHint:query.kind==='asin'&&!query.nameHint&&!results.length,searchAvailable:!!key,searchDiagnostics,debug:{startedAt,finishedAt:new Date().toISOString(),barcodeLookupConfigured:!!process.env.BARCODELOOKUP_API_KEY,providerTrace}};
 });
 const port=Number(process.env.PORT||3001);
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {

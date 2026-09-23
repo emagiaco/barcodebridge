@@ -134,7 +134,7 @@ test('searches product name and size when ASIN has no model, preserving indirect
  };
  try{
   const response=await app.inject({method:'POST',url:'/api/resolve',remoteAddress:'10.0.0.23',payload:{input:uniqueAsin,keys:{tavily:'personal-test-key'}}});
-  assert.match(calls[2].query,/luminer.*hyaluronic.*acid.*100ml.*GTIN/i);
+  assert.match(calls.at(-1).query,/luminer.*serum.*hyaluronic.*acid.*100ml.*EAN/i);
   const result=response.json().results[0];assert.equal(result.gtin,'4150193803301');
   assert.equal(result.confidence,'medium');assert.equal(result.evidence.length,2);
   assert.match(result.reasons.join(' '),/indiretta per nome/);
@@ -152,6 +152,25 @@ test('does not link an ASIN to a different size of the same product',async()=>{
  };
  try{const response=await app.inject({method:'POST',url:'/api/resolve',remoteAddress:'10.0.0.24',payload:{input:uniqueAsin,keys:{tavily:'personal-test-key'}}});assert.equal(response.json().results.length,0)}
  finally{global.fetch=original}
+});
+test('prefers a short retailer snippet for extraction over Amazon and social pages',async()=>{
+ const original=global.fetch,calls=[];
+ const uniqueAsin='B'+(Date.now()+10).toString(36).toUpperCase().padStart(9,'0').slice(-9);
+ const shop='https://shop.example/luminer-serum';
+ global.fetch=async(endpoint,options)=>{
+  const body=JSON.parse(options.body);calls.push({endpoint:String(endpoint),body});
+  if(String(endpoint).endsWith('/extract'))return new Response(JSON.stringify({results:[{url:shop,raw_content:'Luminer Hyaluronic Acid Face Serum 100 ml EAN: 4150193803301'}]}));
+  return new Response(JSON.stringify({results:body.query===uniqueAsin?[
+   {url:`https://www.amazon.it/dp/${uniqueAsin}`,title:'Luminer Hyaluronic Acid Face Serum 100 ml',content:`ASIN ${uniqueAsin} ${'information '.repeat(800)}`},
+   {url:'https://facebook.com/post',title:'Luminer serum',content:uniqueAsin},
+   {url:shop,title:'Luminer Hyaluronic Acid Face Serum 100 ml',content:'Luminer serum'}
+  ]:[]}));
+ };
+ try{const response=await app.inject({method:'POST',url:'/api/resolve',remoteAddress:'10.0.0.31',payload:{input:uniqueAsin,keys:{tavily:'personal-test-key'}}});
+  assert.deepEqual(calls[1].body.urls,[shop]);
+  assert.equal(response.json().results[0].gtin,'4150193803301');
+  assert.equal(response.json().results[0].confidence,'medium');
+ }finally{global.fetch=original}
 });
 test('valid barcode input is rendered without depending on external catalogues',async()=>{
  const original=global.fetch;global.fetch=async()=>{throw new Error('No network expected')};
