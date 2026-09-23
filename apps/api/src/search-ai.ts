@@ -2,7 +2,7 @@ import {validGtin, type ProductQuery, type RawCandidate} from '@barcodebridge/co
 
 export type SearchHit = {url:string; title:string; content:string};
 export type KeyOptions = {tavily?:string; gemini?:string};
-export type SearchDiagnostics = {searches:number;pages:number;asinPages:number;verifiedCodes:number;aiError?:string};
+export type SearchDiagnostics = {searches:number;pages:number;asinPages:number;verifiedCodes:number;samplePages?:string[];aiError?:string};
 
 const labels = /\b(?:EAN(?:-?13)?|UPC(?:-?A)?|GTIN(?:-?13)?)\s*[:#-]?\s*(\d{13}|\d{12}|\d{8})\b/gi;
 const isSafeUrl = (input:string) => {
@@ -71,8 +71,9 @@ export async function resolveWithSearch(query:ProductQuery,keys:KeyOptions,allow
  // The optional model must never discard deterministic candidates if its API is unavailable.
  let ai:RawCandidate[]=[];
  if(keys.gemini && domains.size<2) {
-  try { ai=await geminiExtract(query,hits,keys.gemini); } catch(error) {if(diagnostics)diagnostics.aiError=`Gemini: ${(error as Error).message}`;}
+  if(!/^[\x21-\x7e]+$/.test(keys.gemini)){if(diagnostics)diagnostics.aiError='Gemini: la chiave contiene caratteri non validi; ricopiala dalla console Google.';}
+  else try { ai=await geminiExtract(query,hits,keys.gemini); } catch(error) {if(diagnostics)diagnostics.aiError=`Gemini: ${(error as Error).message}`;}
  }
- if(diagnostics){diagnostics.pages=hits.length;diagnostics.asinPages=hits.filter(hit=>mentionsAsin(query,hit)).length;diagnostics.verifiedCodes=direct.length+ai.length;}
+ if(diagnostics){diagnostics.pages=hits.length;diagnostics.asinPages=hits.filter(hit=>mentionsAsin(query,hit)).length;diagnostics.verifiedCodes=direct.length+ai.length;diagnostics.samplePages=hits.slice(0,5).map(hit=>{const u=new URL(hit.url);return `${u.hostname}${u.pathname}`.slice(0,160)});}
  return [...direct,...ai].filter((candidate,index,all)=>all.findIndex(other=>other.gtin===candidate.gtin&&other.evidence.url===candidate.evidence.url)===index);
 }

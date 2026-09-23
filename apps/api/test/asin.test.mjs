@@ -61,3 +61,15 @@ test('ASIN search uses full source text when the short snippet omits the barcode
   assert.equal(calls[0].include_raw_content,'text');
  }finally{global.fetch=original}
 });
+test('valid barcode input is rendered without depending on external catalogues',async()=>{
+ const original=global.fetch;global.fetch=async()=>{throw new Error('No network expected')};
+ try{const response=await app.inject({method:'POST',url:'/api/resolve',payload:{input:'8054383070350'}});
+  assert.equal(response.statusCode,200);assert.equal(response.json().results[0].gtin,'8054383070350');
+  assert.equal(response.json().results[0].evidence.length,0);
+ }finally{global.fetch=original}
+});
+test('invalid characters in a personal Gemini key are explained without leaking it',async()=>{
+ const response=await app.inject({method:'POST',url:'/api/resolve',payload:{input:'B09SY5QHHJ',keys:{gemini:'not-a-key-√'}}});
+ assert.equal(response.statusCode,400);assert.match(response.json().error,/chiave Gemini contiene caratteri non validi/);
+ assert.ok(!JSON.stringify(response.json()).includes('not-a-key'));
+});

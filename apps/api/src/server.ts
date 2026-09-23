@@ -1,6 +1,6 @@
 import Fastify from 'fastify';
 import {fileURLToPath} from 'node:url';
-import {parseQuery,rankCandidates,type ProductQuery,type RawCandidate} from '@barcodebridge/core';
+import {parseQuery,rankCandidates,validGtin,type ProductQuery,type RawCandidate} from '@barcodebridge/core';
 import {resolveWithSearch,type SearchDiagnostics} from './search-ai.js';
 import {cached,cache,reserveSharedSearch} from './cache.js';
 export const app=Fastify({logger:false});
@@ -48,15 +48,21 @@ app.get('/api/health',async()=>({ok:true}));
 app.post<{Body:{input?:string;nameHint?:string;keys?:{tavily?:string;gemini?:string}}}>('/api/resolve', {bodyLimit:4096}, async(request,reply)=>{
  if(!allow(request.ip)) return reply.code(429).send({error:'Troppe ricerche. Riprova tra un minuto.'});
  let query:ProductQuery;try{query=parseQuery(request.body?.input||'',request.body?.nameHint);}catch(error){return reply.code(400).send({error:(error as Error).message});}
+ if(query.kind==='gtin'){
+  if(!validGtin(query.value))return reply.code(400).send({error:'La cifra di controllo del barcode non è valida.'});
+  return {query,results:[{gtin:query.value,format:query.value.length===8?'EAN-8':query.value.length===12?'UPC-A':'EAN-13',title:'Barcode inserito',confidence:'low',reasons:['Cifra di controllo valida','Prodotto non identificato: verifica il codice sulla confezione'],evidence:[]}],providerErrors:[],needsNameHint:false,searchAvailable:!!process.env.TAVILY_API_KEY};
+ }
  const userKeys=request.body?.keys||{};
  if([userKeys.tavily,userKeys.gemini].some(key=>key!==undefined&&(typeof key!=='string'||key.length>256)))return reply.code(400).send({error:'Chiave API non valida.'});
+ if(userKeys.tavily&&!/^[\x21-\x7e]+$/.test(userKeys.tavily))return reply.code(400).send({error:'La chiave Tavily contiene spazi o caratteri non validi: copiala nuovamente.'});
+ if(userKeys.gemini&&!/^[\x21-\x7e]+$/.test(userKeys.gemini))return reply.code(400).send({error:'La chiave Gemini contiene caratteri non validi: copia solo la chiave API, senza simboli o spazi.'});
  const key=userKeys.tavily||process.env.TAVILY_API_KEY;
  const gemini=userKeys.gemini||process.env.GEMINI_API_KEY;
  const searchCacheKey=JSON.stringify({kind:query.kind,value:query.value,nameHint:query.nameHint||''});
  let searchCandidates=cached(searchCacheKey);
  const searchDiagnostics:SearchDiagnostics={searches:0,pages:0,asinPages:0,verifiedCodes:0};
  const errors:string[]=[];
- if(!searchCandidates && key && query.kind!=='gtin') {
+ if(!searchCandidates && key) {
   try{searchCandidates=await resolveWithSearch(query,{tavily:key,gemini},()=>!!userKeys.tavily||reserveSharedSearch(),searchDiagnostics);cache(searchCacheKey,searchCandidates)}
   catch(error){errors.push((error as Error).message);searchCandidates=[]}
  }
