@@ -29,6 +29,29 @@ function extractByModel(query:ProductQuery,model:string,source:SearchHit,hits:Se
    evidence:{provider:`Web · ${new URL(hit.url).hostname}`,url:hit.url,title:hit.title}}));
  });
 }
+const genericWords=new Set(['face','serum','siero','viso','with','and','the','for','anti','natural','care','skin','ml','avec','visage']);
+function nameAnchor(query:ProductQuery,hits:SearchHit[]){
+ const source=hits.filter(hit=>mentionsAsin(query,hit)&&/^https:\/\/[^/]*amazon\./i.test(hit.url))
+  .filter(hit=>/\b\d{2,4}\s?ml\b/i.test(hit.title)).sort((a,b)=>b.title.length-a.title.length)[0];
+ if(!source)return undefined;
+ const title=source.title.split(/\s[:|]\s|\.\.\./)[0].replace(/[®™]/g,'').trim();
+ const words=(title.toLowerCase().match(/[a-z]{4,}/g)||[]).filter(word=>!genericWords.has(word));
+ const size=title.match(/\b\d{2,4}\s?ml\b/i)?.[0].replace(/\s/g,'').toLowerCase();
+ const brand=words[0];
+ if(!brand||!size||new Set(words.slice(1)).size<2)return undefined;
+ return {source,title,brand,size,details:[...new Set(words.slice(1))]};
+}
+function extractByName(query:ProductQuery,anchor:NonNullable<ReturnType<typeof nameAnchor>>,hits:SearchHit[]):RawCandidate[]{
+ return hits.flatMap(hit=>{
+  if(!isSafeUrl(hit.url)||hit.url===anchor.source.url)return [];
+  const title=hit.title.toLowerCase(),size=hit.title.match(/\b\d{2,4}\s?ml\b/i)?.[0].replace(/\s/g,'').toLowerCase();
+  if(!new RegExp(`\\b${anchor.brand}\\b`,'i').test(title)||size!==anchor.size||anchor.details.filter(word=>title.includes(word)).length<2)return [];
+  const codes=[...new Set([...`${hit.title} ${hit.content.slice(0,3500)}`.matchAll(labels)].map(match=>match[1]))].filter(validGtin);
+  return codes.map(gtin=>({gtin,title:hit.title,linkedByName:true,
+   supportingEvidence:{provider:`Web · ${new URL(anchor.source.url).hostname}`,url:anchor.source.url,title:anchor.source.title,asin:query.value},
+   evidence:{provider:`Web · ${new URL(hit.url).hostname}`,url:hit.url,title:hit.title}}));
+ });
+}
 
 const labels = /\b(?:EAN(?:-?13)?|UPC(?:-?A)?|GTIN(?:-?13)?)\s*[:#-]?\s*(\d{13}|\d{12}|\d{8})\b/gi;
 const isSafeUrl = (input:string) => {
@@ -129,8 +152,9 @@ export async function resolveWithSearch(query:ProductQuery,keys:KeyOptions,allow
  // A second, more specific search is useful when the first snippets contain no verifiable code.
  let linked:RawCandidate[]=[];
  if(query.kind==='asin' && !direct.length && allowSearch()) {
-  const model=productModel(query,hits);
-  try {const more=await tavilySearch(query,keys.tavily,true,diagnostics,model?`${model[0]} GTIN UPC`:undefined);hits.push(...more);direct=extractDirect(query,hits);if(model&&!direct.length)linked=extractByModel(query,model[0],model[1].source,more);if(diagnostics)diagnostics.searches++}
+  const model=productModel(query,hits),anchor=!model?nameAnchor(query,hits):undefined;
+  const nameTerm=anchor?`${anchor.brand} ${anchor.details.slice(0,3).join(' ')} ${anchor.size} GTIN`:undefined;
+  try {const more=await tavilySearch(query,keys.tavily,true,diagnostics,model?`${model[0]} GTIN UPC`:nameTerm);hits.push(...more);direct=extractDirect(query,hits);if(model&&!direct.length)linked=extractByModel(query,model[0],model[1].source,more);else if(anchor&&!direct.length)linked=extractByName(query,anchor,more);if(diagnostics)diagnostics.searches++}
   catch(error) { if(diagnostics)diagnostics.aiError=`Seconda ricerca: ${(error as Error).message}`; }
  }
  // One small model call only when deterministic evidence is insufficient.

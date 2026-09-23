@@ -112,6 +112,37 @@ test('links an ASIN to a GTIN through the exact model with both sources and medi
   assert.ok(!result.reasons.includes('ASIN associato esplicitamente alla fonte'));
  }finally{global.fetch=original}
 });
+test('searches product name and size when ASIN has no model, preserving indirect evidence',async()=>{
+ const original=global.fetch,calls=[];
+ const uniqueAsin='B'+(Date.now()+7).toString(36).toUpperCase().padStart(9,'0').slice(-9);
+ global.fetch=async(endpoint,options)=>{
+  const body=JSON.parse(options.body);calls.push(body);
+  if(String(endpoint).endsWith('/extract'))return new Response(JSON.stringify({results:[]}));
+  return new Response(JSON.stringify({results:body.query===uniqueAsin?[
+   {url:`https://www.amazon.it/dp/${uniqueAsin}`,title:'Luminer Hyaluronic Acid Face Serum 100 ml',content:`ASIN: ${uniqueAsin}`}
+  ]:[{url:'https://store.example/luminer',title:'Luminer Hyaluronic Acid Face Serum 100 ml',content:'EAN: 4150193803301'}]}));
+ };
+ try{
+  const response=await app.inject({method:'POST',url:'/api/resolve',remoteAddress:'10.0.0.23',payload:{input:uniqueAsin,keys:{tavily:'personal-test-key'}}});
+  assert.match(calls[2].query,/luminer.*hyaluronic.*acid.*100ml.*GTIN/i);
+  const result=response.json().results[0];assert.equal(result.gtin,'4150193803301');
+  assert.equal(result.confidence,'medium');assert.equal(result.evidence.length,2);
+  assert.match(result.reasons.join(' '),/indiretta per nome/);
+ }finally{global.fetch=original}
+});
+test('does not link an ASIN to a different size of the same product',async()=>{
+ const original=global.fetch;
+ const uniqueAsin='B'+(Date.now()+8).toString(36).toUpperCase().padStart(9,'0').slice(-9);
+ global.fetch=async(endpoint,options)=>{
+  const body=JSON.parse(options.body);
+  if(String(endpoint).endsWith('/extract'))return new Response(JSON.stringify({results:[]}));
+  return new Response(JSON.stringify({results:body.query===uniqueAsin?[
+   {url:`https://www.amazon.it/dp/${uniqueAsin}`,title:'Luminer Hyaluronic Acid Face Serum 100 ml',content:`ASIN: ${uniqueAsin}`}
+  ]:[{url:'https://store.example/luminer',title:'Luminer Hyaluronic Acid Face Serum 30 ml',content:'EAN: 4150193803301'}]}));
+ };
+ try{const response=await app.inject({method:'POST',url:'/api/resolve',remoteAddress:'10.0.0.24',payload:{input:uniqueAsin,keys:{tavily:'personal-test-key'}}});assert.equal(response.json().results.length,0)}
+ finally{global.fetch=original}
+});
 test('valid barcode input is rendered without depending on external catalogues',async()=>{
  const original=global.fetch;global.fetch=async()=>{throw new Error('No network expected')};
  try{const response=await app.inject({method:'POST',url:'/api/resolve',payload:{input:'8054383070350'}});
