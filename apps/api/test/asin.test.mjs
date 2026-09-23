@@ -92,6 +92,26 @@ test('ignores unrelated EANs elsewhere in an extracted page',async()=>{
   assert.equal(response.json().results.length,0);assert.equal(calls.length,3);
  }finally{global.fetch=original}
 });
+test('links an ASIN to a GTIN through the exact model with both sources and medium confidence',async()=>{
+ const original=global.fetch,calls=[];
+ const uniqueAsin='B'+(Date.now()+6).toString(36).toUpperCase().padStart(9,'0').slice(-9);
+ global.fetch=async(endpoint,options)=>{
+  const body=JSON.parse(options.body);calls.push({endpoint:String(endpoint),body});
+  if(String(endpoint).endsWith('/extract'))return new Response(JSON.stringify({results:[],failed_results:[]}));
+  return new Response(JSON.stringify({results:body.query===uniqueAsin?[
+   {url:'https://seller.example/lexar',title:'Lexar NS100 2TB LNS100-2TRB',content:`ASIN ${uniqueAsin} model LNS100-2TRB`},
+   {url:'https://review.example/lexar',title:'Lexar NS100 2TB LNS100-2TRB',content:`ASIN ${uniqueAsin} model LNS100-2TRB`}
+  ]:[{url:'https://catalog.example/lexar',title:'Lexar NS100 2TB LNS100-2TRB',content:'EAN: 0843367120758'}]}));
+ };
+ try{
+  const response=await app.inject({method:'POST',url:'/api/resolve',payload:{input:uniqueAsin,keys:{tavily:'personal-test-key'}}});
+  const result=response.json().results[0];
+  assert.equal(calls[2].body.query,'LNS100-2TRB GTIN UPC');
+  assert.equal(result.gtin,'843367120758');assert.equal(result.confidence,'medium');
+  assert.equal(result.evidence.length,2);assert.match(result.reasons.join(' '),/modello LNS100-2TRB/);
+  assert.ok(!result.reasons.includes('ASIN associato esplicitamente alla fonte'));
+ }finally{global.fetch=original}
+});
 test('valid barcode input is rendered without depending on external catalogues',async()=>{
  const original=global.fetch;global.fetch=async()=>{throw new Error('No network expected')};
  try{const response=await app.inject({method:'POST',url:'/api/resolve',payload:{input:'8054383070350'}});

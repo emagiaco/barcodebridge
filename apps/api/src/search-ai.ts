@@ -4,6 +4,31 @@ export type SearchHit = {url:string; title:string; content:string};
 export type KeyOptions = {tavily?:string; gemini?:string};
 export type SearchAttempt={query:string;startedAt:string;durationMs:number;httpStatus:number;resultCount:number;results:{url:string;title:string;excerpt:string;rawLength:number}[];error?:string};
 export type SearchDiagnostics = {searches:number;pages:number;asinPages:number;verifiedCodes:number;samplePages?:string[];aiError?:string;attempts?:SearchAttempt[];extractAttempt?:{urls:string[];startedAt:string;httpStatus:number;extracted:number;failed:number;error?:string};aiAttempt?:{model:string;startedAt:string;httpStatus:number;sourceCount:number;error?:string}};
+const modelPattern=/\b[A-Z][A-Z0-9]{3,16}-[A-Z0-9]{2,10}\b/g;
+function productModel(query:ProductQuery,hits:SearchHit[]) {
+ if(query.kind!=='asin')return undefined;
+ const counts=new Map<string,{count:number;source:SearchHit}>();
+ for(const hit of hits.filter(hit=>mentionsAsin(query,hit))){
+  const models=new Set(`${hit.title} ${hit.content}`.toUpperCase().match(modelPattern)||[]);
+  for(const model of models){
+   if(!/\d/.test(model)||!/[A-Z]/.test(model.split('-')[1])||model.includes(query.value))continue;
+   const entry=counts.get(model);counts.set(model,{count:(entry?.count||0)+1,source:entry?.source||hit});
+  }
+ }
+ return [...counts].sort((a,b)=>b[1].count-a[1].count).find(([,entry])=>entry.count>=2);
+}
+function extractByModel(query:ProductQuery,model:string,source:SearchHit,hits:SearchHit[]):RawCandidate[]{
+ return hits.flatMap(hit=>{
+  if(!isSafeUrl(hit.url)||hit.url===source.url||!`${hit.title} ${hit.content}`.toUpperCase().includes(model))return [];
+  const text=`${hit.title} ${hit.content}`,upper=text.toUpperCase(),windows:string[]=[];
+  for(let position=upper.indexOf(model);position!==-1&&windows.length<8;position=upper.indexOf(model,position+model.length))
+   windows.push(text.slice(Math.max(0,position-400),Math.min(text.length,position+400)));
+  const codes=[...new Set(windows.flatMap(window=>[...window.matchAll(labels)].map(match=>match[1])))].filter(validGtin);
+  return codes.map(gtin=>({gtin,title:hit.title,linkedByModel:model,
+   supportingEvidence:{provider:`Web · ${new URL(source.url).hostname}`,url:source.url,title:source.title,asin:query.value},
+   evidence:{provider:`Web · ${new URL(hit.url).hostname}`,url:hit.url,title:hit.title}}));
+ });
+}
 
 const labels = /\b(?:EAN(?:-?13)?|UPC(?:-?A)?|GTIN(?:-?13)?)\s*[:#-]?\s*(\d{13}|\d{12}|\d{8})\b/gi;
 const isSafeUrl = (input:string) => {
@@ -24,9 +49,9 @@ export function extractDirect(query:ProductQuery, hits:SearchHit[]):RawCandidate
  });
 }
 
-export async function tavilySearch(query:ProductQuery, key:string, fallback=false,diagnostics?:SearchDiagnostics):Promise<SearchHit[]> {
+export async function tavilySearch(query:ProductQuery, key:string, fallback=false,diagnostics?:SearchDiagnostics,termOverride?:string):Promise<SearchHit[]> {
  // Generic barcode terms can dominate the ranking and hide the ASIN entirely.
- const term=query.kind==='asin'?(fallback?`${query.value} EAN`:`${query.value}`): `${query.value} EAN barcode`;
+ const term=termOverride|| (query.kind==='asin'?(fallback?`${query.value} EAN`:`${query.value}`): `${query.value} EAN barcode`);
  const startedAt=new Date().toISOString(),start=Date.now();
  let response:Response;
  try {response=await fetch('https://api.tavily.com/search',{
@@ -102,8 +127,10 @@ export async function resolveWithSearch(query:ProductQuery,keys:KeyOptions,allow
   catch(error){if(diagnostics)diagnostics.aiError=`Pagine: ${(error as Error).message}`}
  }
  // A second, more specific search is useful when the first snippets contain no verifiable code.
+ let linked:RawCandidate[]=[];
  if(query.kind==='asin' && !direct.length && allowSearch()) {
-  try {const more=await tavilySearch(query,keys.tavily,true,diagnostics);hits.push(...more);direct=extractDirect(query,hits);if(diagnostics)diagnostics.searches++}
+  const model=productModel(query,hits);
+  try {const more=await tavilySearch(query,keys.tavily,true,diagnostics,model?`${model[0]} GTIN UPC`:undefined);hits.push(...more);direct=extractDirect(query,hits);if(model&&!direct.length)linked=extractByModel(query,model[0],model[1].source,more);if(diagnostics)diagnostics.searches++}
   catch(error) { if(diagnostics)diagnostics.aiError=`Seconda ricerca: ${(error as Error).message}`; }
  }
  // One small model call only when deterministic evidence is insufficient.
@@ -114,6 +141,6 @@ export async function resolveWithSearch(query:ProductQuery,keys:KeyOptions,allow
   if(!/^[\x21-\x7e]+$/.test(keys.gemini)){if(diagnostics)diagnostics.aiError='Gemini: la chiave contiene caratteri non validi; ricopiala dalla console Google.';}
   else try { ai=await geminiExtract(query,hits,keys.gemini,diagnostics); } catch(error) {if(diagnostics)diagnostics.aiError=`Gemini: ${(error as Error).message}`;}
  }
- if(diagnostics){diagnostics.pages=hits.length;diagnostics.asinPages=hits.filter(hit=>mentionsAsin(query,hit)).length;diagnostics.verifiedCodes=direct.length+ai.length;diagnostics.samplePages=hits.slice(0,5).map(hit=>{const u=new URL(hit.url);return `${u.hostname}${u.pathname}`.slice(0,160)});}
- return [...direct,...ai].filter((candidate,index,all)=>all.findIndex(other=>other.gtin===candidate.gtin&&other.evidence.url===candidate.evidence.url)===index);
+ if(diagnostics){diagnostics.pages=hits.length;diagnostics.asinPages=hits.filter(hit=>mentionsAsin(query,hit)).length;diagnostics.verifiedCodes=direct.length+linked.length+ai.length;diagnostics.samplePages=hits.slice(0,5).map(hit=>{const u=new URL(hit.url);return `${u.hostname}${u.pathname}`.slice(0,160)});}
+ return [...direct,...linked,...ai].filter((candidate,index,all)=>all.findIndex(other=>other.gtin===candidate.gtin&&other.evidence.url===candidate.evidence.url)===index);
 }

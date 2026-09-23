@@ -1,7 +1,7 @@
 export type InputKind = 'asin' | 'name' | 'gtin';
 export type ProductQuery = { kind: InputKind; value: string; nameHint?: string };
 export type Evidence = { provider: string; url: string; title: string; brand?: string; quantity?: string; asin?: string; checkedOn?: string };
-export type RawCandidate = { gtin: string; title: string; brand?: string; quantity?: string; asin?: string; evidence: Evidence };
+export type RawCandidate = { gtin: string; title: string; brand?: string; quantity?: string; asin?: string; evidence: Evidence; linkedByModel?: string; supportingEvidence?: Evidence };
 export type Result = { gtin: string; format: 'EAN-13' | 'UPC-A' | 'EAN-8'; title: string; brand?: string; quantity?: string; confidence: 'high' | 'medium' | 'low'; reasons: string[]; evidence: Evidence[] };
 
 export function parseQuery(raw: string, nameHint?: string): ProductQuery {
@@ -49,12 +49,13 @@ export function rankCandidates(query: ProductQuery, raw: RawCandidate[]): Result
     const asinMatched=query.kind==='asin' && items.some(x=>x.asin?.toUpperCase()===query.value);
     const reasons=['Cifra di controllo valida'];
     if(asinMatched) reasons.push('ASIN associato esplicitamente alla fonte');
+    if(items.some(x=>x.linkedByModel)) reasons.push(`Collegamento tramite modello ${items.find(x=>x.linkedByModel)!.linkedByModel}: controlla la variante`);
     if(sim>=.65) reasons.push('Nome del prodotto compatibile');
     if(expected.length && !mismatch && expected.some(x=>actual.includes(x))) reasons.push('Formato corrispondente');
     if(providers.size>1) reasons.push(`${providers.size} fonti distinte concordano`);
     if(mismatch) reasons.push('Attenzione: il formato potrebbe essere diverso');
-    let score=.12 + (asinMatched ? .52 : 0) + (sim>=.65 ? .30 : sim>=.35 ? .13 : 0) + (providers.size>1 ? .25 : 0) + (expected.length&&!mismatch&&actual.length ? .13 : 0) - (mismatch ? .45 : 0);
+    let score=.12 + (asinMatched ? .52 : 0) + (items.some(x=>x.linkedByModel) ? .32 : 0) + (sim>=.65 ? .30 : sim>=.35 ? .13 : 0) + (providers.size>1 ? .25 : 0) + (expected.length&&!mismatch&&actual.length ? .13 : 0) - (mismatch ? .45 : 0);
     score=Math.max(0,Math.min(1,score));
-    return {gtin,format:gtin.length===8?'EAN-8':gtin.length===12?'UPC-A':'EAN-13',title:best.title,brand:best.brand,quantity:best.quantity,confidence:score>=.72?'high':score>=.40?'medium':'low',reasons,evidence:items.map(x=>x.evidence)} as Result;
+    return {gtin,format:gtin.length===8?'EAN-8':gtin.length===12?'UPC-A':'EAN-13',title:best.title,brand:best.brand,quantity:best.quantity,confidence:score>=.72&&asinMatched?'high':score>=.40?'medium':'low',reasons,evidence:items.flatMap(x=>x.supportingEvidence?[x.supportingEvidence,x.evidence]:[x.evidence])} as Result;
   }).sort((a,b)=>({high:3,medium:2,low:1}[b.confidence]-{high:3,medium:2,low:1}[a.confidence] || b.evidence.length-a.evidence.length));
 }
