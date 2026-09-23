@@ -9,10 +9,13 @@ Richiede Node.js 24+ e npm. Da questa cartella:
 ```bash
 npm install
 npm run build -w @barcodebridge/core
+cp .env.example .env
+# Inserisci la tua TAVILY_API_KEY in .env (GEMINI_API_KEY è facoltativa).
 npm run dev
 ```
 
 Apri http://localhost:5173. L'API gira su http://localhost:3001 e Vite inoltra `/api` durante lo sviluppo.
+Il file `.env` va nella cartella principale del repository. Riavvia `npm run dev` dopo ogni modifica a `.env`. In alternativa inserisci la chiave Tavily nell'interfaccia sotto «Chiavi API personali»; dopo averla salvata, premi «Sblocca» con la tua frase per usarla in una nuova sessione. Una chiave Gemini da sola non permette di cercare un ASIN sul web.
 
 Per la build: `npm run build`, poi `npm run start -w @barcodebridge/api` e servi `apps/web/dist` con un server statico che inoltri `/api` all'API. Per eseguire i test: `npm test` dopo la build del core.
 
