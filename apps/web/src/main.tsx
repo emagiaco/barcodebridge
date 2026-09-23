@@ -20,6 +20,8 @@ function App(){
  const [input,setInput]=useState(''); const [hint,setHint]=useState('');const [loading,setLoading]=useState(false);
  const [data,setData]=useState<Reply|null>(null);const [error,setError]=useState('');
  const [debugText,setDebugText]=useState(''),[copyMessage,setCopyMessage]=useState('');
+ const copyTimer=useRef<number|null>(null);
+ useEffect(()=>()=>{if(copyTimer.current!==null)window.clearTimeout(copyTimer.current)},[]);
  const [settings,setSettings]=useState(false),[keys,setKeys]=useState({tavily:'',gemini:''}),[phrase,setPhrase]=useState(''),[saved,setSaved]=useState(false),[keyMessage,setKeyMessage]=useState('');const [selected,setSelected]=useState(0);const [scan,setScan]=useState(false);
  useEffect(()=>{hasSavedKeys().then(setSaved).catch(()=>{})},[]);
  const asin=/^(?:B[A-Z0-9]{9}|https?:\/\/[^\s]*amazon\.[^\s]+\/[^\s]+)$/i.test(input.trim());
@@ -28,7 +30,8 @@ function App(){
  try{const res=await fetch('/api/resolve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({input:submittedInput,nameHint:submittedHint,keys:{tavily:keys.tavily||undefined,gemini:keys.gemini||undefined}})});httpStatus=res.status;const json=await res.json();responseBody=json;if(!res.ok)throw new Error(json.error||'Impossibile completare la ricerca');setData(json);}catch(err){clientError=(err as Error).message;setError(clientError)}finally{
   setDebugText(JSON.stringify({report:'BarcodeBridge debug',createdAt:new Date().toISOString(),startedAt,input:submittedInput,nameHint:submittedHint,personalKeysPresent:{tavily:!!keys.tavily,gemini:!!keys.gemini},request:{method:'POST',path:'/api/resolve',credentials:'omitted'},httpStatus,response:responseBody??null,clientError},null,2));setLoading(false)
  } }
- async function exportInfo(){try{await copyText(debugText);setCopyMessage('Informazioni copiate: incollale nella chat.')}catch{setCopyMessage('Copia non riuscita: apri il sito tramite HTTPS o localhost.')}}
+ function showCopyMessage(message:string){if(copyTimer.current!==null)window.clearTimeout(copyTimer.current);setCopyMessage(message);copyTimer.current=window.setTimeout(()=>{setCopyMessage('');copyTimer.current=null},5000)}
+ async function exportInfo(){try{await copyText(debugText);showCopyMessage('Informazioni copiate')}catch{showCopyMessage('Copia non riuscita: apri il sito tramite HTTPS o localhost.')}}
  const exportButton=debugText?<button type="button" className="export-info" onClick={exportInfo}><ClipboardCopy size={16}/> Esporta info</button>:null;
  const product=data?.results[selected];
  useEffect(()=>{if(!scan)return;const handler=(e:KeyboardEvent)=>{if(e.key==='Escape')setScan(false)};document.addEventListener('keydown',handler);return()=>document.removeEventListener('keydown',handler)},[scan]);
