@@ -24,10 +24,11 @@ export function extractDirect(query:ProductQuery, hits:SearchHit[]):RawCandidate
 }
 
 export async function tavilySearch(query:ProductQuery, key:string, fallback=false):Promise<SearchHit[]> {
- const term=query.kind==='asin'?(fallback?`${query.value} EAN ebay`:`"${query.value}" EAN GTIN barcode`): `${query.value} EAN barcode`;
+ // Generic barcode terms can dominate the ranking and hide the ASIN entirely.
+ const term=query.kind==='asin'?(fallback?`${query.value} EAN`:`${query.value}`): `${query.value} EAN barcode`;
  const response=await fetch('https://api.tavily.com/search',{
   method:'POST',headers:{'Authorization':`Bearer ${key}`,'Content-Type':'application/json'},
-  body:JSON.stringify({query:term,search_depth:'basic',max_results:10,include_answer:false,include_raw_content:query.kind==='asin'?'text':false}),
+  body:JSON.stringify({query:term,search_depth:'basic',max_results:10,exact_match:query.kind==='asin',include_answer:false,include_raw_content:query.kind==='asin'?'text':false}),
   signal:AbortSignal.timeout(9000),
  });
  if(!response.ok) throw new Error(`Ricerca web: HTTP ${response.status}`);
