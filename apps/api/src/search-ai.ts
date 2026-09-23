@@ -46,6 +46,8 @@ function nameAnchor(query:ProductQuery,hits:SearchHit[]){
 function extractByName(query:ProductQuery,anchor:NonNullable<ReturnType<typeof nameAnchor>>,hits:SearchHit[]):RawCandidate[]{
  return hits.flatMap(hit=>{
   if(!isSafeUrl(hit.url)||hit.url===anchor.source.url)return [];
+  const otherAsins=[...`${hit.url} ${hit.title} ${hit.content}`.matchAll(/(?:\bASIN\s*[:#-]?\s*|\/dp\/)(B[A-Z0-9]{9})\b/gi)].map(match=>match[1].toUpperCase());
+  if(otherAsins.some(asin=>asin!==query.value))return [];
   const title=hit.title.toLowerCase().replace(/acido\s+ialuronico/g,'hyaluronic acid').replace(/vitamina/g,'vitamin').replace(/anti[ -]?rughe/g,'wrinkle'),size=hit.title.match(/\b\d{2,4}\s?ml\b/i)?.[0].replace(/\s/g,'').toLowerCase();
   if(!new RegExp(`\\b${anchor.brand}\\b`,'i').test(title)||size!==anchor.size||anchor.details.filter(word=>title.includes(word)).length<2||/\b(?:kit|set|bundle|confezione|pack\s*(?:of|da)?\s*[2-9]|[2-9]\s?(?:pcs|pezzi|bottles)|[2-9]\s?[x×]\s?\d{2,4}\s?ml)\b/i.test(title))return [];
   const codes=[...new Set([...`${hit.title} ${hit.content.slice(0,3500)}`.matchAll(labels)].map(match=>match[1]))].filter(validGtin);
@@ -77,11 +79,12 @@ export function extractDirect(query:ProductQuery, hits:SearchHit[]):RawCandidate
 export async function tavilySearch(query:ProductQuery, key:string, fallback=false,diagnostics?:SearchDiagnostics,termOverride?:string):Promise<SearchHit[]> {
  // Generic barcode terms can dominate the ranking and hide the ASIN entirely.
  const term=termOverride|| (query.kind==='asin'?(fallback?`${query.value} EAN`:`${query.value}`): `${query.value} EAN barcode`);
+ const italianFallback=fallback&&/\bsiero viso\b/i.test(term);
  const startedAt=new Date().toISOString(),start=Date.now();
  let response:Response;
  try {response=await fetch('https://api.tavily.com/search',{
   method:'POST',headers:{'Authorization':`Bearer ${key}`,'Content-Type':'application/json'},
-  body:JSON.stringify({query:term,search_depth:'basic',max_results:10,include_answer:false,include_raw_content:query.kind==='asin'?'text':false}),
+  body:JSON.stringify({query:term,search_depth:'basic',max_results:10,include_answer:false,include_raw_content:query.kind==='asin'?'text':false,...(italianFallback?{country:'italy',include_domains:['migliorprezzo.it','convenienza.com','trovaprezzi.it','idealo.it','kaufland.it'],include_domains_mode:'prefer'}:{})}),
   signal:AbortSignal.timeout(9000),
  });}catch(error){diagnostics?.attempts?.push({query:term,startedAt,durationMs:Date.now()-start,httpStatus:0,resultCount:0,results:[],error:(error as Error).message.replaceAll(key,'[REDACTED]')});throw error}
  if(!response.ok){
@@ -160,7 +163,7 @@ export async function resolveWithSearch(query:ProductQuery,keys:KeyOptions,allow
  let searchedFallback=false;
  if(query.kind==='asin' && !direct.length && allowSearch()) {
   const model=productModel(query,hits),anchor=!model?nameAnchor(query,hits):undefined;
-  const italian=anchor&&hits.some(hit=>mentionsAsin(query,hit)&&new URL(hit.url).hostname.endsWith('amazon.it'));
+  const italian=anchor&&hits.some(hit=>mentionsAsin(query,hit)&&/(?:amazon\.it|\bsiero\s+viso\b|\bacido\s+ialuronico\b)/i.test(`${hit.url} ${hit.title} ${hit.content.slice(0,500)}`));
   const nameTerm=anchor?italian?`${anchor.brand} ${anchor.type==='serum'?'siero viso':''} ${anchor.details.includes('hyaluronic')?'acido ialuronico':anchor.details.slice(0,2).join(' ')} ${anchor.size} EAN`.replace(/\s+/g,' ').trim():`${anchor.brand} ${anchor.type||''} ${anchor.details.filter(word=>word!=='wrinkle').slice(0,2).join(' ')} ${anchor.size} EAN`.replace(/\s+/g,' ').trim():undefined;
   try {const more=await tavilySearch(query,keys.tavily,true,diagnostics,model?`${model[0]} GTIN UPC`:nameTerm);searchedFallback=true;hits.push(...more);direct=extractDirect(query,hits);if(model&&!direct.length)linked=extractByModel(query,model[0],model[1].source,more);else if(anchor&&!direct.length){linked=extractByName(query,anchor,[...extractedHits,...more]);if(!linked.length&&allowSearch()){const extractedMore=await tavilyExtract(query,more,keys.tavily,diagnostics,'fallbackExtractAttempt',anchor);hits.push(...extractedMore);direct.push(...extractDirect(query,extractedMore));linked=extractByName(query,anchor,extractedMore)}}if(diagnostics)diagnostics.searches++}
   catch(error) { if(diagnostics)diagnostics.aiError=`Seconda ricerca: ${(error as Error).message}`; }
