@@ -3,7 +3,8 @@ import {validGtin, type ProductQuery, type RawCandidate} from '@barcodebridge/co
 export type SearchHit = {url:string; title:string; content:string};
 export type KeyOptions = {tavily?:string; gemini?:string};
 export type SearchAttempt={query:string;startedAt:string;durationMs:number;httpStatus:number;resultCount:number;results:{url:string;title:string;excerpt:string;rawLength:number}[];error?:string};
-export type SearchDiagnostics = {searches:number;pages:number;asinPages:number;verifiedCodes:number;samplePages?:string[];aiError?:string;attempts?:SearchAttempt[];extractAttempt?:{urls:string[];startedAt:string;httpStatus:number;extracted:number;failed:number;error?:string};aiAttempt?:{model:string;startedAt:string;httpStatus:number;sourceCount:number;error?:string}};
+type ExtractAttempt={urls:string[];startedAt:string;httpStatus:number;extracted:number;failed:number;error?:string};
+export type SearchDiagnostics = {searches:number;pages:number;asinPages:number;verifiedCodes:number;samplePages?:string[];aiError?:string;attempts?:SearchAttempt[];extractAttempt?:ExtractAttempt;fallbackExtractAttempt?:ExtractAttempt;aiAttempt?:{model:string;startedAt:string;httpStatus:number;sourceCount:number;error?:string}};
 const modelPattern=/\b[A-Z][A-Z0-9]{3,16}-[A-Z0-9]{2,10}\b/g;
 function productModel(query:ProductQuery,hits:SearchHit[]) {
  if(query.kind!=='asin')return undefined;
@@ -30,7 +31,7 @@ function extractByModel(query:ProductQuery,model:string,source:SearchHit,hits:Se
  });
 }
 const genericWords=new Set(['face','serum','siero','viso','with','and','the','for','anti','natural','care','skin','ml','avec','visage']);
-const retailer=(url:string)=>{const host=new URL(url).hostname.toLowerCase();return !/(^|\.)(?:amazon\.[a-z.]+|facebook\.com|instagram\.com|tiktok\.com|youtube\.com)$/.test(host)};
+const retailer=(url:string)=>{const host=new URL(url).hostname.toLowerCase();return !/(^|\.)(?:amazon\.[a-z.]+|facebook\.com|instagram\.com|tiktok\.com|youtube\.com|ubuy\.[a-z.]+)$/.test(host)};
 function nameAnchor(query:ProductQuery,hits:SearchHit[]){
  const source=hits.filter(hit=>mentionsAsin(query,hit)&&/^https:\/\/[^/]*amazon\./i.test(hit.url))
   .filter(hit=>/\b\d{2,4}\s?ml\b/i.test(hit.title)).sort((a,b)=>b.title.length-a.title.length)[0];
@@ -45,8 +46,8 @@ function nameAnchor(query:ProductQuery,hits:SearchHit[]){
 function extractByName(query:ProductQuery,anchor:NonNullable<ReturnType<typeof nameAnchor>>,hits:SearchHit[]):RawCandidate[]{
  return hits.flatMap(hit=>{
   if(!isSafeUrl(hit.url)||hit.url===anchor.source.url)return [];
-  const title=hit.title.toLowerCase(),size=hit.title.match(/\b\d{2,4}\s?ml\b/i)?.[0].replace(/\s/g,'').toLowerCase();
-  if(!new RegExp(`\\b${anchor.brand}\\b`,'i').test(title)||size!==anchor.size||anchor.details.filter(word=>title.includes(word)).length<2)return [];
+  const title=hit.title.toLowerCase().replace(/acido\s+ialuronico/g,'hyaluronic acid').replace(/vitamina/g,'vitamin').replace(/anti[ -]?rughe/g,'wrinkle'),size=hit.title.match(/\b\d{2,4}\s?ml\b/i)?.[0].replace(/\s/g,'').toLowerCase();
+  if(!new RegExp(`\\b${anchor.brand}\\b`,'i').test(title)||size!==anchor.size||anchor.details.filter(word=>title.includes(word)).length<2||/\b(?:kit|set|bundle|confezione|pack\s*(?:of|da)?\s*[2-9]|[2-9]\s?(?:pcs|pezzi|bottles)|[2-9]\s?[x×]\s?\d{2,4}\s?ml)\b/i.test(title))return [];
   const codes=[...new Set([...`${hit.title} ${hit.content.slice(0,3500)}`.matchAll(labels)].map(match=>match[1]))].filter(validGtin);
   return codes.map(gtin=>({gtin,title:hit.title,linkedByName:true,
    supportingEvidence:{provider:`Web · ${new URL(anchor.source.url).hostname}`,url:anchor.source.url,title:anchor.source.title,asin:query.value},
@@ -95,22 +96,22 @@ export async function tavilySearch(query:ProductQuery, key:string, fallback=fals
  return results;
 }
 
-async function tavilyExtract(query:ProductQuery,hits:SearchHit[],key:string,diagnostics?:SearchDiagnostics):Promise<SearchHit[]> {
- const anchor=nameAnchor(query,hits);
+async function tavilyExtract(query:ProductQuery,hits:SearchHit[],key:string,diagnostics?:SearchDiagnostics,stage:'extractAttempt'|'fallbackExtractAttempt'='extractAttempt',anchorOverride?:ReturnType<typeof nameAnchor>):Promise<SearchHit[]> {
+ const anchor=anchorOverride||nameAnchor(query,hits);
  const selected=[...new Map(hits.filter(hit=>retailer(hit.url)&&(
-  mentionsAsin(query,hit)||!!anchor&&(hit.title.toLowerCase().includes(anchor.brand)&&hit.title.toLowerCase().includes(anchor.type||anchor.brand))
+  mentionsAsin(query,hit)||!!anchor&&(hit.title.toLowerCase().includes(anchor.brand)&&(!anchor.type||/\b(?:serum|siero|sérum)\b/i.test(hit.title)))
  )).map(hit=>[hit.url,hit])).values()].sort((a,b)=>a.content.length-b.content.length).slice(0,5);
  if(!selected.length)return [];
  const urls=selected.map(hit=>hit.url);
- if(diagnostics)diagnostics.extractAttempt={urls,startedAt:new Date().toISOString(),httpStatus:0,extracted:0,failed:0};
+ if(diagnostics)diagnostics[stage]={urls,startedAt:new Date().toISOString(),httpStatus:0,extracted:0,failed:0};
  const response=await fetch('https://api.tavily.com/extract',{
   method:'POST',headers:{'Authorization':`Bearer ${key}`,'Content-Type':'application/json'},
   body:JSON.stringify({urls,extract_depth:'basic',format:'text'}),signal:AbortSignal.timeout(12000),
  });
- if(diagnostics?.extractAttempt)diagnostics.extractAttempt.httpStatus=response.status;
- if(!response.ok){if(diagnostics?.extractAttempt)diagnostics.extractAttempt.error=(await response.text()).replaceAll(key,'[REDACTED]').slice(0,1000);throw new Error(`Estrazione pagine: HTTP ${response.status}`)}
+ if(diagnostics?.[stage])diagnostics[stage]!.httpStatus=response.status;
+ if(!response.ok){if(diagnostics?.[stage])diagnostics[stage]!.error=(await response.text()).replaceAll(key,'[REDACTED]').slice(0,1000);throw new Error(`Estrazione pagine: HTTP ${response.status}`)}
  const data=await response.json() as {results?:{url?:string;raw_content?:string}[];failed_results?:unknown[]};
- if(diagnostics?.extractAttempt){diagnostics.extractAttempt.extracted=data.results?.length||0;diagnostics.extractAttempt.failed=data.failed_results?.length||0;}
+ if(diagnostics?.[stage]){diagnostics[stage]!.extracted=data.results?.length||0;diagnostics[stage]!.failed=data.failed_results?.length||0;}
  return (data.results||[]).flatMap(item=>{
   const original=selected.find(hit=>hit.url===item.url);
   if(!original||typeof item.raw_content!=='string')return [];
@@ -156,11 +157,17 @@ export async function resolveWithSearch(query:ProductQuery,keys:KeyOptions,allow
  }
  // A second, more specific search is useful when the first snippets contain no verifiable code.
  let linked:RawCandidate[]=[];
+ let searchedFallback=false;
  if(query.kind==='asin' && !direct.length && allowSearch()) {
   const model=productModel(query,hits),anchor=!model?nameAnchor(query,hits):undefined;
-  const nameTerm=anchor?`${anchor.brand} ${anchor.type||''} ${anchor.details.filter(word=>word!=='wrinkle').slice(0,2).join(' ')} ${anchor.size} EAN`.replace(/\s+/g,' ').trim():undefined;
-  try {const more=await tavilySearch(query,keys.tavily,true,diagnostics,model?`${model[0]} GTIN UPC`:nameTerm);hits.push(...more);direct=extractDirect(query,hits);if(model&&!direct.length)linked=extractByModel(query,model[0],model[1].source,more);else if(anchor&&!direct.length)linked=extractByName(query,anchor,[...extractedHits,...more]);if(diagnostics)diagnostics.searches++}
+  const italian=anchor&&hits.some(hit=>mentionsAsin(query,hit)&&new URL(hit.url).hostname.endsWith('amazon.it'));
+  const nameTerm=anchor?italian?`${anchor.brand} ${anchor.type==='serum'?'siero viso':''} ${anchor.details.includes('hyaluronic')?'acido ialuronico':anchor.details.slice(0,2).join(' ')} ${anchor.size} EAN`.replace(/\s+/g,' ').trim():`${anchor.brand} ${anchor.type||''} ${anchor.details.filter(word=>word!=='wrinkle').slice(0,2).join(' ')} ${anchor.size} EAN`.replace(/\s+/g,' ').trim():undefined;
+  try {const more=await tavilySearch(query,keys.tavily,true,diagnostics,model?`${model[0]} GTIN UPC`:nameTerm);searchedFallback=true;hits.push(...more);direct=extractDirect(query,hits);if(model&&!direct.length)linked=extractByModel(query,model[0],model[1].source,more);else if(anchor&&!direct.length){linked=extractByName(query,anchor,[...extractedHits,...more]);if(!linked.length&&allowSearch()){const extractedMore=await tavilyExtract(query,more,keys.tavily,diagnostics,'fallbackExtractAttempt',anchor);hits.push(...extractedMore);direct.push(...extractDirect(query,extractedMore));linked=extractByName(query,anchor,extractedMore)}}if(diagnostics)diagnostics.searches++}
   catch(error) { if(diagnostics)diagnostics.aiError=`Seconda ricerca: ${(error as Error).message}`; }
+ }
+ if(query.kind==='asin'&&searchedFallback&&!direct.length&&!linked.length&&allowSearch()){
+  try{const more=await tavilySearch(query,keys.tavily,true,diagnostics,`${query.value} codice EAN`);hits.push(...more);direct=extractDirect(query,more);if(diagnostics)diagnostics.searches++}
+  catch(error){if(diagnostics)diagnostics.aiError=`Ricerca ASIN EAN: ${(error as Error).message}`}
  }
  // One small model call only when deterministic evidence is insufficient.
  const domains=new Set(direct.map(item=>new URL(item.evidence.url).hostname));
