@@ -15,7 +15,10 @@ async function upcitemdb(query:ProductQuery):Promise<RawCandidate[]> {
  const term=searchTerm(query), byCode=query.kind==='gtin';
  const url=new URL(`https://api.upcitemdb.com/prod/trial/${byCode?'lookup':'search'}`);
  url.searchParams.set(byCode?'upc':'s',term);
- const data=await getJson(url);
+ // UPCitemdb may return 404 when its catalogue has no match for a text search.
+ // This does not indicate that the Tavily search failed.
+ let data:any;
+ try {data=await getJson(url)} catch(error){if((error as Error).message==='HTTP 404')return [];throw error}
  return (data.items||[]).slice(0,10).map((item:any)=>({gtin:String(item.ean||item.upc||''),title:String(item.title||''),brand:item.brand||undefined,quantity:item.size||undefined,evidence:{provider:'UPCitemdb',url:`https://www.upcitemdb.com/upc/${encodeURIComponent(String(item.ean||item.upc||''))}`,title:String(item.title||''),brand:item.brand||undefined,quantity:item.size||undefined}}));
 }
 async function openFacts(query:ProductQuery,host:string,label:string):Promise<RawCandidate[]> {
