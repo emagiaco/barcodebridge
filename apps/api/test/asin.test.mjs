@@ -31,6 +31,16 @@ test('API resolves an ASIN with one search call and a personal key',async()=>{
   assert.equal(calls.length,1);assert.equal(calls[0].options.headers.Authorization,'Bearer personal-test-key');
  }finally{global.fetch=fetchOriginal}
 });
+test('structured ASIN lookup is attempted before Tavily and skips search on a valid match',async()=>{
+ const original=global.fetch,oldKey=process.env.BARCODELOOKUP_API_KEY,calls=[];
+ process.env.BARCODELOOKUP_API_KEY='test-server-key';
+ const uniqueAsin='B'+(Date.now()+9).toString(36).toUpperCase().padStart(9,'0').slice(-9);
+ global.fetch=async(url)=>{calls.push(String(url));return new Response(JSON.stringify({products:[{asin:uniqueAsin,barcode_number:'4150193803301',title:'Siero 30 ml'}]}))};
+ try{const response=await app.inject({method:'POST',url:'/api/resolve',remoteAddress:'10.0.0.30',payload:{input:uniqueAsin,keys:{tavily:'personal-test-key'}}});
+  assert.equal(response.json().results[0].gtin,'4150193803301');assert.equal(calls.length,1);
+  assert.match(calls[0],/api\.barcodelookup\.com/);assert.equal(response.json().searchDiagnostics.searches,0);
+ }finally{global.fetch=original;if(oldKey===undefined)delete process.env.BARCODELOOKUP_API_KEY;else process.env.BARCODELOOKUP_API_KEY=oldKey}
+});
 test('ASIN search retries once with an EAN query when the first snippets lack an EAN',async()=>{
  const original=global.fetch, calls=[];
  const uniqueAsin='B'+(Date.now()+1).toString(36).toUpperCase().padStart(9,'0').slice(-9);

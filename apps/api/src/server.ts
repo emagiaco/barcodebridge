@@ -63,16 +63,22 @@ app.post<{Body:{input?:string;nameHint?:string;keys?:{tavily?:string;gemini?:str
  let searchCandidates=cached(searchCacheKey);
  const searchDiagnostics:SearchDiagnostics={searches:0,pages:0,asinPages:0,verifiedCodes:0,attempts:[]};
  const errors:string[]=[];
- if(!searchCandidates && key) {
+ // For ASINs, try the structured identifier service before spending search credits.
+ const direct=query.kind==='asin'&&process.env.BARCODELOOKUP_API_KEY
+  ? await Promise.allSettled([barcodeLookup(query)]) : [];
+ const directCandidates=direct.flatMap(item=>item.status==='fulfilled'?item.value:[]).filter(item=>validGtin(item.gtin)&&(!item.asin||item.asin.toUpperCase()===query.value));
+ const directErrors=direct.flatMap(item=>item.status==='rejected'?[`Barcode Lookup: ${(item.reason as Error).message}`]:[]);
+ if(!searchCandidates && key && !directCandidates.length) {
   try{searchCandidates=await resolveWithSearch(query,{tavily:key,gemini},()=>!!userKeys.tavily||reserveSharedSearch(),searchDiagnostics);cache(searchCacheKey,searchCandidates)}
   catch(error){errors.push((error as Error).message);searchCandidates=[]}
  }
  const active=query.kind==='asin'&&!query.nameHint
-  ? providers.filter(p=>p.name==='Barcode Lookup')
-  : providers;
+  ? []
+  : providers.filter(p=>p.name!=='Barcode Lookup'||!direct.length);
  const settled=await Promise.allSettled(active.map(p=>p.run(query)));
- const providerTrace=settled.map((item,index)=>({provider:active[index].name,status:item.status,count:item.status==='fulfilled'?item.value.length:0,error:item.status==='rejected'?(item.reason as Error).message:undefined}));
- const candidates=[...(searchCandidates||[]),...settled.flatMap(x=>x.status==='fulfilled'?x.value:[])];
+ const providerTrace=[...direct.map(item=>({provider:'Barcode Lookup',status:item.status,count:item.status==='fulfilled'?item.value.length:0,error:item.status==='rejected'?(item.reason as Error).message:undefined})),...settled.map((item,index)=>({provider:active[index].name,status:item.status,count:item.status==='fulfilled'?item.value.length:0,error:item.status==='rejected'?(item.reason as Error).message:undefined}))];
+ const candidates=[...directCandidates,...(searchCandidates||[]),...settled.flatMap(x=>x.status==='fulfilled'?x.value:[])];
+ errors.push(...directErrors);
  errors.push(...settled.flatMap((x,i)=>x.status==='rejected'?[`${active[i].name}: ${(x.reason as Error).message}`]:[]));
  const results=rankCandidates(query,candidates).slice(0,15);
  return {query,results,providerErrors:errors,needsNameHint:query.kind==='asin'&&!query.nameHint&&!results.length,searchAvailable:!!key,searchDiagnostics,debug:{startedAt,finishedAt:new Date().toISOString(),providerTrace}};
